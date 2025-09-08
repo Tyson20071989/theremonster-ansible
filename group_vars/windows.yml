@@ -1,0 +1,22 @@
+# Uses ONLY the Windows ISOs you listed on the node
+iso_map:
+  # Windows Client
+  windows-10-enterprise: Windows_10_Enterprise.iso
+  windows-10-enterprise-ltsc: Windows_10_Enterprise_LTSC.iso
+  windows-11-enterprise: "Windows _11_Enterprise.iso"          # note the space before _11
+  windows-11-enterprise-ltsc: Windows_11_Enterprise_LTSC.iso
+
+  # Windows Server
+  windows-server-2019: Windows_Server_2019.iso
+  windows-server-2022: Windows_Server_2022.iso
+  windows-server-2025: Windows_Server_2025.iso
+
+# Optional drivers ISO (for VirtIO storage/network during setup)
+virtio_iso: virtio-win.iso
+
+# ISO storage (where your ISOs are mounted in Proxmox)
+# e.g. /mnt/pve/iso-share/template/iso/*.iso
+default_storage_pool: iso-share
+
+# Where to create VM disks (kept consistent with your Linux playbook)
+disk_storage_pool: local-lvm

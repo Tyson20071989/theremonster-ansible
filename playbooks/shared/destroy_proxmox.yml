@@ -1,0 +1,208 @@
+---
+- name: Gather VM destruction choices
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    proxmox_group: proxmox
+    # Optional override:
+    #   -e '{"proxmox_nodes":["remonster-2","remonster-4"]}'
+    #   -e 'proxmox_nodes=["remonster-2","remonster-4"]'
+
+  tasks:
+    # Normalize proxmox_nodes: accept actual list OR string-that-looks-like-a-list
+    - name: Normalize proxmox_nodes if provided
+      set_fact:
+        proxmox_nodes_norm: "{{ (proxmox_nodes | from_yaml) if (proxmox_nodes is defined and (proxmox_nodes is not sequence)) else (proxmox_nodes | default([])) }}"
+      run_once: true
+
+    - name: Define fallback node list
+      set_fact:
+        fallback_nodes:
+          - remonster-1
+          - remonster-2
+          - remonster-3
+          - remonster-4
+          - remonster-5
+      run_once: true
+
+    # Choose source: override > inventory group > fallback
+    - name: Use override list when provided
+      set_fact:
+        available_nodes: "{{ proxmox_nodes_norm | list }}"
+      when: proxmox_nodes_norm | length > 0
+      run_once: true
+
+    - name: Else use inventory group if present
+      set_fact:
+        available_nodes: "{{ groups.get(proxmox_group, []) | list }}"
+      when: (proxmox_nodes_norm | length == 0) and (groups.get(proxmox_group, []) | length > 0)
+      run_once: true
+
+    - name: Else use fallback list
+      set_fact:
+        available_nodes: "{{ fallback_nodes }}"
+      when: available_nodes is not defined or (available_nodes | length) == 0
+      run_once: true
+
+    - name: Sanity-check the node list type
+      debug:
+        msg: "Available nodes => {{ available_nodes }} (type={{ available_nodes | type_debug }})"
+      run_once: true
+
+    - name: Build node menu text (separate step to avoid re-evaluating Jinja)
+      set_fact:
+        node_menu: |
+          1) Select Proxmox nodes to target (comma-separated indices or 'all', default all):
+          {% for host in available_nodes %}
+            {{ loop.index }}) {{ host }}
+          {% endfor %}
+          Enter selection [all]
+      run_once: true
+
+    - name: 1) Select Proxmox nodes
+      pause:
+        prompt: "{{ node_menu }}"
+      register: node_selection
+      run_once: true
+
+    - name: Default to all nodes
+      set_fact:
+        target_nodes: "{{ available_nodes }}"
+      run_once: true
+
+    # Replace the fragile override with robust parsing
+    - name: Parse node indices into selected_nodes
+      set_fact:
+        selected_nodes: >-
+          {%- set out = [] -%}
+          {%- for s in (node_selection.user_input | trim | split(',')) -%}
+            {%- set t = s | trim -%}
+            {%- if t|length > 0 and (t|int|string) == t -%}
+              {%- set idx = (t|int) - 1 -%}
+              {%- if 0 <= idx < (available_nodes | length) -%}
+                {%- set _ = out.append(available_nodes[idx]) -%}
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+      when:
+        - node_selection.user_input is defined
+        - node_selection.user_input | trim | lower != 'all'
+        - node_selection.user_input | trim != ''
+      run_once: true
+
+    - name: Override target_nodes when valid indices provided
+      set_fact:
+        target_nodes: "{{ selected_nodes }}"
+      when:
+        - selected_nodes is defined
+        - selected_nodes | length > 0
+      run_once: true
+
+    - name: 2) Enter VM IDs to destroy (comma-separated or 'all')
+      pause:
+        prompt: "2) Enter VM IDs to destroy, comma-separated, or 'all' to remove every VM:"
+      register: vm_ids_input
+      run_once: true
+
+    - name: Determine whether to delete all
+      set_fact:
+        delete_all: "{{ (vm_ids_input.user_input | default('all') | trim | lower) == 'all' }}"
+      run_once: true
+
+    - name: Parse vm_ids when not deleting all
+      set_fact:
+        vm_ids: "{{ vm_ids_input.user_input.split(',') | map('trim') | select('ne','') | list }}"
+      when: not delete_all
+      run_once: true
+
+    - name: Confirm destruction
+      pause:
+        prompt: >
+          You are about to DESTROY
+          {% if delete_all %}ALL{% else %}VMs {{ vm_ids | join(', ') }}{% endif %}
+          on nodes {{ target_nodes | join(', ') }}.
+          This operation is irreversible.
+          Press ENTER to proceed or CTRL+C to abort.
+      run_once: true
+
+    # If deleting all, gather VM IDs per node and build pairs
+    - name: Gather all VM IDs per node (delete_all)
+      shell: qm list | awk 'NR>1 {print $1}'
+      delegate_to: "{{ item }}"
+      register: all_vm_ids_per_node
+      when: delete_all
+      loop: "{{ target_nodes }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Build node/vm pairs for delete_all
+      set_fact:
+        pairs_to_delete: >-
+          {%- set out = [] -%}
+          {%- for r in all_vm_ids_per_node.results | default([]) -%}
+            {%- set node = r.item -%}
+            {%- for vm in r.stdout_lines | default([]) -%}
+              {%- set _ = out.append({'node': node, 'vm_id': vm}) -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ out }}
+      when: delete_all
+      run_once: true
+
+    # If specific VMs were provided, build pairs from target_nodes x vm_ids
+    - name: Build node/vm pairs for specified list
+      set_fact:
+        pairs_to_delete: >-
+          {%- set out = [] -%}
+          {%- for n in target_nodes -%}
+            {%- for v in vm_ids | default([]) -%}
+              {%- set _ = out.append({'node': n, 'vm_id': v}) -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ out }}
+      when: not delete_all
+      run_once: true
+
+
+- name: Stop & destroy VMs on selected Proxmox nodes
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Fail fast if nothing to delete
+      fail:
+        msg: "No VMs found to delete."
+      when: (pairs_to_delete | length) == 0
+
+    - name: Force-stop VMs (ignore errors)
+      shell: qm stop {{ item.vm_id }}
+      delegate_to: "{{ item.node }}"
+      loop: "{{ pairs_to_delete }}"
+      loop_control:
+        label: "node={{ item.node }} vm={{ item.vm_id }}"
+      failed_when: false
+
+    - name: Destroy VMs (only unlink/delete disks under /mnt/network-vms/, then destroy)
+      shell: |
+        for disk in $(qm config {{ item.vm_id }} | awk -F, '{print $1}' | grep "/mnt/network-vms/"); do
+          qm disk unlink {{ item.vm_id }} ${disk%%:*} --force || true
+          qm disk delete {{ item.vm_id }} ${disk%%:*} --force || true
+        done
+        qm destroy {{ item.vm_id }} --skiplock
+      delegate_to: "{{ item.node }}"
+      loop: "{{ pairs_to_delete }}"
+      loop_control:
+        label: "node={{ item.node }} vm={{ item.vm_id }}"
+
+    - name: Save CSV summary of deleted VMs
+      delegate_to: localhost
+      run_once: true
+      lineinfile:
+        path: "./proxmox_vm_deletion_summary.csv"
+        line: "{{ item.node }},{{ item.vm_id }}"
+        create: true
+      loop: "{{ pairs_to_delete }}"
+      loop_control:
+        label: "node={{ item.node }} vm={{ item.vm_id }}"

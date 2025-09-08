@@ -1,0 +1,43 @@
+# /opt/ansible/group_vars/linux.yml
+
+iso_map:
+  # Common aliases (fallbacks)
+  ubuntu: ubuntu-22.04.5-live-server-amd64.iso
+  fedora: Fedora-Server-dvd-x86_64-42-1.1.iso
+  rhel: rhel-9.6-x86_64-dvd.iso
+  centos: CentOS-Stream-9-latest-x86_64-dvd1.iso
+  opensuse: openSUSE-Tumbleweed-DVD-x86_64-Current.iso
+
+  # Actual variant mappings
+  ubuntu-20.04: ubuntu-20.04.6-live-server-amd64.iso
+  ubuntu-22.04: ubuntu-22.04.5-live-server-amd64.iso
+  ubuntu-25.04: ubuntu-25.04-live-server-amd64.iso
+  ubuntu-24.04-desktop: ubuntu-24.04.3-desktop-amd64.iso
+  ubuntu-25.04-desktop: ubuntu-25.04-desktop-amd64.iso
+  ubuntu-budgie-24.04: ubuntu-budgie-24.04.3-desktop-amd64.iso
+  ubuntu-budgie-25.04: ubuntu-budgie-25.04-desktop-amd64.iso
+  ubuntucinnamon-24.04: ubuntucinnamon-24.04.3-desktop-amd64.iso
+  ubuntucinnamon-25.04: ubuntucinnamon-25.04-desktop-amd64.iso
+  ubuntu-mate-24.04: ubuntu-mate-24.04.3-desktop-amd64.iso
+  ubuntu-mate-25.04: ubuntu-mate-25.04-desktop-amd64.iso
+  ubuntu-unity-25.04: ubuntu-unity-25.04-desktop-amd64.iso
+  ubuntustudio-24.04: ubuntustudio-24.04.3-dvd-amd64.iso
+  edubuntu-24.04: edubuntu-24.04.3-desktop-amd64.iso
+  edubuntu-25.04: edubuntu-25.04-desktop-amd64.iso
+
+  fedora-server-42: Fedora-Server-dvd-x86_64-42-1.1.iso
+  fedora-workstation-42: Fedora-Workstation-Live-42-1.1.x86_64.iso
+  fedora-kde-42: Fedora-KDE-Desktop-Live-42-1.1.x86_64.iso
+
+  rhel-9.6: rhel-9.6-x86_64-dvd.iso
+  rhel-10.0: rhel-10.0-x86_64-dvd.iso
+  centos-9: CentOS-Stream-9-latest-x86_64-dvd1.iso
+  centos-10: CentOS-Stream-10-latest-x86_64-dvd1.iso
+
+  opensuse-leap-15.6: openSUSE-Leap-15.6-DVD-x86_64-Media.iso
+  opensuse-microos: openSUSE-MicroOS-DVD-x86_64-Current.iso
+  opensuse-tumbleweed: openSUSE-Tumbleweed-DVD-x86_64-Current.iso
+
+  clearlinux: clear-43800-live-desktop.iso
+
+default_storage_pool: iso-share

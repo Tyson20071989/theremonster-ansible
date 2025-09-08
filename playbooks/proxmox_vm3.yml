@@ -1,0 +1,628 @@
+---
+# Ensure python3-six is installed on all Proxmox nodes
+- name: Ensure python3-six is installed on Proxmox nodes
+  hosts: proxmox
+  become: yes
+  gather_facts: false
+  tasks:
+    - name: Install python3-six
+      apt:
+        name: python3-six
+        state: present
+        update_cache: yes
+
+# ========================
+# PLAY 1: GATHER INPUTS AND SYNTHESIZE PER-VM HOSTS
+# ========================
+
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    iso_map:
+      centos10: CentOS-Stream-10-latest-x86_64-dvd1.iso
+      centos9: CentOS-Stream-9-latest-x86_64-dvd1.iso
+      clear-linux: clear-43800-live-desktop.iso
+      edubuntu-24.04.3: edubuntu-24.04.3-desktop-amd64.iso
+      edubuntu-25.04: edubuntu-25.04-desktop-amd64.iso
+      fedora-kde: Fedora-KDE-Desktop-Live-42-1.1.x86_64.iso
+      fedora-server: Fedora-Server-dvd-x86_64-42-1.1.iso
+      fedora-workstation: Fedora-Workstation-Live-42-1.1.x86_64.iso
+      kubuntu-25.04: kubuntu-25.04-desktop-amd64.iso
+      lubuntu-24.04.3: lubuntu-24.04.3-desktop-amd64.iso
+      lubuntu-25.04: lubuntu-25.04-desktop-amd64.iso
+      netgate-installer: netgate-installer-v1.0-RC-amd64-20240919-1435.iso
+      opensuse-leap: openSUSE-Leap-15.6-DVD-x86_64-Media.iso
+      opensuse-microos: openSUSE-MicroOS-DVD-x86_64-Current.iso
+      opensuse-tumbleweed: openSUSE-Tumbleweed-DVD-x86_64-Current.iso
+      opnsense: OPNsense-25.7-dvd-amd64.iso
+      proxmox-ve-9.0: proxmox-ve_9.0-1.iso
+      rhel-10: rhel-10.0-x86_64-dvd.iso
+      rhel-9.6: rhel-9.6-x86_64-dvd.iso
+      ubuntu-20.04: ubuntu-20.04.6-live-server-amd64.iso
+      ubuntu-22.04: ubuntu-22.04.5-live-server-amd64.iso
+      ubuntu-24.04.3: ubuntu-24.04.3-desktop-amd64.iso
+      ubuntu-25.04: ubuntu-25.04-desktop-amd64.iso
+      ubuntu-25.04-server: ubuntu-25.04-live-server-amd64.iso
+      ubuntu-budgie-24.04.3: ubuntu-budgie-24.04.3-desktop-amd64.iso
+      ubuntu-budgie-25.04: ubuntu-budgie-25.04-desktop-amd64.iso
+      ubuntucinnamon-24.04.3: ubuntucinnamon-24.04.3-desktop-amd64.iso
+      ubuntucinnamon-25.04: ubuntucinnamon-25.04-desktop-amd64.iso
+      ubuntu-mate-24.04.3: ubuntu-mate-24.04.3-desktop-amd64.iso
+      ubuntu-mate-25.04: ubuntu-mate-25.04-desktop-amd64.iso
+      ubuntustudio-24.04.3: ubuntustudio-24.04.3-dvd-amd64.iso
+      ubuntu-unity-25.04: ubuntu-unity-25.04-desktop-amd64.iso
+      virtio-win: virtio-win.iso
+      win10-ent: Windows_10_Enterprise.iso
+      win10-ltsc: Windows_10_Enterprise_LTSC.iso
+      win11-ent: Windows_11_Enterprise.iso
+      win11-ltsc: Windows_11_Enterprise_LTSC.iso
+      windows-server-2019: Windows_Server_2019.iso
+      windows-server-2022: Windows_Server_2022.iso
+      windows-server-2025: Windows_Server_2025.iso
+
+    vlan_options:
+      - { name: "Backup", id: 500 }
+      - { name: "Dev2", id: 700 }
+      - { name: "Home", id: 1111 }
+      - { name: "Nas", id: 400 }
+      - { name: "admin.theremonster.lan", id: 200 }
+      - { name: "ceph", id: 600 }
+      - { name: "dev.theremonster.local", id: 250 }
+      - { name: "theremonster.lan(Default)", id: 100 }
+      - { name: "web.theremonster.local", id: 150 }
+
+    os_families:
+      firewall:
+        firewall: ['netgate-installer', 'opnsense']
+      linux:
+        centos: ['centos10', 'centos9']
+        fedora: ['fedora-server', 'fedora-workstation', 'fedora-kde']
+        opensuse: ['opensuse-leap', 'opensuse-microos', 'opensuse-tumbleweed']
+        proxmox: ['proxmox-ve-9.0', 'proxmox-ve-8.3', 'proxmox-ve-8.4']
+        rhel: ['rhel-10', 'rhel-9.6', 'rhel-9.6-ks']
+        ubuntu: [
+          'ubuntu-20.04', 'ubuntu-22.04', 'ubuntu-24.04.3', 'ubuntu-25.04', 'ubuntu-25.04-server',
+          'edubuntu-24.04.3', 'edubuntu-25.04',
+          'kubuntu-25.04',
+          'lubuntu-24.04.3', 'lubuntu-25.04',
+          'ubuntu-budgie-24.04.3', 'ubuntu-budgie-25.04',
+          'ubuntucinnamon-24.04.3', 'ubuntucinnamon-25.04',
+          'ubuntu-mate-24.04.3', 'ubuntu-mate-25.04',
+          'ubuntustudio-24.04.3', 'ubuntu-unity-25.04'
+        ]
+        clear: ['clear-linux']
+      windows:
+        windows10: ['win10-ent', 'win10-ltsc']
+        windows11: ['win11-ent', 'win11-ltsc']
+        server: ['windows-server-2019', 'windows-server-2022', 'windows-server-2025']
+        virtio: ['virtio-win']
+        vmware: ['vmware']
+
+  vars_prompt:
+    - name: bios_choice
+      prompt: |
+        BIOS type (default ovmf):
+        1) seabios
+        2) ovmf
+        Enter 1 or 2 [1]:
+      private: no
+
+    - name: disk_format_choice
+      prompt: |
+        Disk format (default qcow2):
+        1) qcow2
+        2) raw
+        Enter 1 or 2 [1]:
+      private: no
+
+    - name: vlan_id_choice
+      prompt: |
+        12) Select VLAN for VM network (default 1):
+        {% for vlan in vlan_options %}
+          {{ loop.index }}) {{ vlan.name }} ({{ vlan.id }})
+        {% endfor %}
+          0) Custom VLAN ID
+        Enter number [1] or custom VLAN ID:
+      private: no
+
+    - name: sockets_choice
+      prompt: |
+        9) Select number of CPU sockets (default 1):
+          1) 1 socket
+          2) 2 sockets
+          3) 4 sockets
+          4) 8 sockets
+        Or enter a custom value (e.g. 3)
+        Enter number or count [1]
+      private: no
+
+    - name: cores_choice
+      prompt: |
+        10) Select number of CPU cores (default 2):
+          1) 1 core
+          2) 2 cores
+          3) 4 cores
+          4) 8 cores
+        Or enter a custom value (e.g. 6)
+        Enter number or count [2]
+      private: no
+
+    - name: cpu_model_choice
+      prompt: |
+        11) Select CPU type/model (default 2):
+          1) x86-64-v2-AES
+          2) x86-64-v3
+          3) host
+          4) qemu64
+          5) kvm64
+        Or enter a custom value
+        Enter number or custom value [2]:
+      private: no
+
+  tasks:
+    - name: Set BIOS and disk format values
+      set_fact:
+        bios: >-
+          {% set val = bios_choice | trim %}
+          {% if val == '1' %}
+            seabios
+          {% elif val == '2' %}
+            ovmf
+          {% else %}
+            ovmf
+          {% endif %}
+        disk_format: >-
+          {% set val = disk_format_choice | trim %}
+          {% if val == '1' %}
+            qcow2
+          {% elif val == '2' %}
+            raw
+          {% else %}
+            qcow2
+          {% endif %}
+
+    - name: Debug BIOS and disk format selections
+      debug:
+        msg:
+          - "BIOS: {{ bios }}"
+          - "Disk format: {{ disk_format }}"
+
+    # --- Begin: Per-VM input collection and deploy_target host creation ---
+    - name: 1) Select Proxmox node
+      pause:
+        prompt: |
+          1) Select Proxmox node (default 1):
+          {% for h in groups['proxmox'] %}
+            {{ loop.index }}) {{ h }}
+          {% endfor %}
+          Enter number [1]
+      register: node_choice
+      run_once: true
+
+    - name: Set target_node
+      set_fact:
+        target_node: "{{ groups['proxmox'][(node_choice.user_input | default('1')) | int - 1] }}"
+      run_once: true
+
+    - name: 2) Select OS type
+      pause:
+        prompt: |
+          2) Select OS type (default linux):
+          1) linux
+          2) windows
+          3) firewall
+          Enter number [1]
+      register: os_type_choice
+      run_once: true
+
+    - name: Set os_type
+      set_fact:
+        os_type: "{{ ['linux','windows','firewall'][(os_type_choice.user_input | default('1')) | int - 1] }}"
+      run_once: true
+
+    - name: 3) Select OS family
+      pause:
+        prompt: |
+          3) Select OS family (default 1):
+          {% set family_list = os_families[os_type].keys() | list %}
+          {% for family in family_list %}
+            {{ loop.index }}) {{ family }}
+          {% endfor %}
+          Enter number [1]
+      register: family_choice
+      run_once: true
+
+    - name: Set os_family and os_family_variants
+      set_fact:
+        os_family: "{{ (os_families[os_type].keys() | list)[(family_choice.user_input | default('1')) | int - 1] }}"
+        os_family_variants: "{{ os_families[os_type][ (os_families[os_type].keys() | list)[(family_choice.user_input | default('1')) | int - 1] ] }}"
+      run_once: true
+
+    - name: 4) Select OS variant within that family
+      pause:
+        prompt: |
+          4) Select OS variant (default 1):
+          {% for key in os_family_variants %}
+            {{ loop.index }}) {{ key }}
+          {% endfor %}
+          Enter number [1]
+      register: variant_choice
+      run_once: true
+
+
+    - name: Set os_variant
+      set_fact:
+        os_variant: "{{ os_family_variants[(variant_choice.user_input | default('1')) | int - 1] }}"
+      run_once: true
+
+
+    - name: 5) Enter starting VMID
+      pause:
+        prompt: "5) Enter starting VMID [100]:"
+      register: vmid_start_input
+      run_once: true
+
+    - name: 6) Enter number of VMs to create
+      pause:
+        prompt: "6) Enter number of VMs to create [1]:"
+      register: vm_count_input
+      run_once: true
+
+    - name: 7) Select memory (RAM) in MB for all VMs
+      pause:
+        prompt: |
+          7) Select RAM in MB for all VMs (default 2):
+            1) 2048 MB
+            2) 4096 MB
+            3) 8192 MB
+            4) 16384 MB
+            5) 32768 MB
+          Or enter a custom value (e.g. 6144)
+          Enter number or MB [2]
+      register: memory_choice
+      run_once: true
+
+    - name: Set memory fact (from menu or custom)
+      set_fact:
+        memory: >-
+          {% set menu = [2048, 4096, 8192, 16384, 32768] %}
+          {% set val = memory_choice.user_input | trim %}
+          {% if val.isdigit() and 1 <= val|int <= menu|length %}
+            {{ menu[val|int-1]|string }}
+          {% elif val.isdigit() %}
+            {{ val }}
+          {% else %}
+            4096
+          {% endif %}
+      run_once: true
+
+    - name: 8) Select disk size (GB) for all VMs
+      pause:
+        prompt: |
+          8) Select disk size in GB for all VMs (default 3):
+            1) 16 GB
+            2) 32 GB
+            3) 64 GB
+            4) 128 GB
+            5) 256 GB
+          Or enter a custom value (e.g. 80)
+          Enter number or size [3]
+      register: disk_size_choice
+      run_once: true
+
+    - name: Set disk_size fact (from menu or custom)
+      set_fact:
+        disk_size: >-
+          {% set menu = [16, 32, 64, 128, 256] %}
+          {% set val = disk_size_choice.user_input | trim %}
+          {% if val.isdigit() and 1 <= val|int <= menu|length %}
+            {{ menu[val|int-1]|string }}
+          {% else %}
+            {{ val | regex_replace('(?i)gb', '') | trim }}
+          {% endif %}
+      run_once: true
+
+    - name: 9) Select number of CPU sockets for all VMs
+      pause:
+        prompt: |
+          9) Select number of CPU sockets (default 1):
+            1) 1 socket
+            2) 2 sockets
+            3) 4 sockets
+            4) 8 sockets
+          Or enter a custom value (e.g. 3)
+          Enter number or count [1]
+      register: sockets_choice
+      run_once: true
+
+    - name: Set sockets fact (from menu or custom)
+      set_fact:
+        sockets: >-
+          {% set menu = [1, 2, 4, 8] %}
+          {% set val = sockets_choice.user_input | trim %}
+          {{ (menu[val|int-1]|string if val|int|string == val else val)|default('1') | trim }}
+      run_once: true
+
+    - name: 10) Select number of CPU cores for all VMs
+      pause:
+        prompt: |
+          10) Select number of CPU cores (default 2):
+            1) 1 core
+            2) 2 cores
+            3) 4 cores
+            4) 8 cores
+          Or enter a custom value (e.g. 6)
+          Enter number or count [2]
+      register: cores_choice
+      run_once: true
+
+    - name: Set cores fact (from menu or custom)
+      set_fact:
+        cores: >-
+          {% set menu = [1, 2, 4, 8] %}
+          {% set val = cores_choice.user_input | trim %}
+          {{ (menu[val|int-1]|string if val|int|string == val else val)|default('2') | trim }}
+      run_once: true
+
+    - name: 11) Select CPU type (model) for all VMs
+      pause:
+        prompt: |
+          11) Select CPU type/model (default 2):
+            1) x86-64-v2-AES
+            2) x86-64-v3
+            3) host
+            4) qemu64
+            5) kvm64
+          Or enter a custom value
+          Enter number or custom value [2]
+      register: cpu_model_choice
+      run_once: true
+
+    - name: Set cpu_model fact (from menu or custom)
+      set_fact:
+        cpu_model: >-
+          {% set menu = ['x86-64-v2-AES', 'x86-64-v3', 'host', 'qemu64', 'kvm64'] %}
+          {% set val = cpu_model_choice.user_input | trim %}
+          {% if val|int|string == val and 1 <= val|int <= menu|length %}
+            {{ menu[val|int-1] }}
+          {% elif val %}
+            {{ val }}
+          {% else %}
+            ""
+          {% endif %}
+      run_once: true
+    - name: Set vlan_id fact (from menu or custom)
+      set_fact:
+        vlan_id: >-
+          {% set val = vlan_id_choice | trim %}
+          {% if val.isdigit() and 1 <= val|int <= vlan_options|length %}
+            {{ vlan_options[val|int-1].id }}
+          {% elif val.isdigit() and val|int == 0 %}
+            ""
+          {% else %}
+            {{ val }}
+          {% endif %}
+      run_once: true
+
+    - name: Set vmid_start and vm_count facts
+      set_fact:
+        vmid_start: "{{ (vmid_start_input.user_input | trim) if (vmid_start_input.user_input | trim) else '100' }}"
+        vm_count: "{{ (vm_count_input.user_input | trim) if (vm_count_input.user_input | trim) else '1' }}"
+      run_once: true
+
+    - name: Initialize vm_defs list
+      set_fact:
+        vm_defs: []
+      run_once: true
+
+    - name: Build vm_defs list (sequential VMIDs)
+      set_fact:
+        vm_defs: "{{ vm_defs + [ {'vm_id': item|string, 'vm_name': os_variant ~ '-' ~ (item|string) } ] }}"
+      loop: "{{ range(vmid_start | int, (vmid_start | int) + (vm_count | int)) }}"
+      run_once: true
+
+    - name: Add synthetic hosts for parallel VM creation (with per-VM params)
+      add_host:
+        name: "vm-{{ item.vm_id }}"
+        groups: deploy_target
+        proxmox_node: "{{ target_node }}"
+        vm_id: "{{ item.vm_id }}"
+        vm_name: "{{ item.vm_name }}"
+        os_variant: "{{ os_variant|trim }}"
+        iso_file: "{{ iso_map[os_variant|trim] }}"
+        iso_storage: iso-share
+        memory: "{{ memory }}"
+        cpu_model: "{{ cpu_model }}"
+        cores: "{{ cores }}"
+        sockets: "{{ sockets }}"
+        disk_size: "{{ disk_size | trim }}"
+        agent: 1
+        bios: "{{ bios }}"
+        boot: >-
+          {% if os_type == 'windows' %}
+            order=sata0;sata1;sata3
+          {% elif os_type in ['linux', 'firewall'] %}
+            order=ide2;sata0
+          {% else %}
+            order=sata0
+          {% endif %}
+        machine: "{{ 'pc-q35-9.2+pve1' if os_type == 'windows' else 'q35' }}"
+        sata0: >-
+          {% if os_type == 'windows' %}iso-share:iso/{{ iso_map[os_variant|trim] }},media=cdrom{% else %}omit{% endif %}
+        sata1: >-
+          {% if os_type == 'windows' %}iso-share:iso/{{ iso_map['virtio-win'] }},media=cdrom{% else %}omit{% endif %}
+        sata3: >-
+          local-lvm:{{ (disk_size | trim | regex_replace('(?i)gb', '')) }}
+        ide2: >-
+          {%- if os_type in ['linux', 'firewall'] and iso_map.get(os_variant|trim) -%}
+          iso-share:iso/{{ iso_map[os_variant|trim] }},media=cdrom
+          {%- else -%}
+          omit
+          {%- endif -%}
+        net0: >-
+          virtio={{ '52:54:%02x:%02x:%02x:%02x' | format((100+item.vm_id|int)%256, (item.vm_id|int)%256, (item.vm_id|int*2)%256, (item.vm_id|int*3)%256) }},bridge=vmbr0,firewall=1{% if vlan_id|trim %},tag={{ vlan_id|trim }}{% endif %}
+        scsihw: "lsi"
+        ostype: >-
+          {% set ostype_map = {
+            'win11-ent': 'win11',
+            'win11-ltsc': 'win11',
+            'win10-ent': 'win10',
+            'win10-ltsc': 'win10',
+            'windows-server-2019': 'win10',
+            'windows-server-2022': 'win11',
+            'windows-server-2025': 'win11',
+            'virtio-win': 'win10'
+          } %}
+          {{ ostype_map.get(os_variant|trim, os_variant|trim) if os_type == 'windows' else omit }}
+        numa: 0
+        os_type: "{{ os_type }}"
+      loop: "{{ vm_defs }}"
+    # --- End: Per-VM input collection and deploy_target host creation ---
+
+# ========================
+# PLAY 2: PARALLEL VM DEPLOYMENT
+# ========================
+
+- name: Deploy VMs to chosen Proxmox host(s) in parallel
+  hosts: deploy_target
+  gather_facts: false
+
+  vars:
+    iso_map:
+      centos10: CentOS-Stream-10-latest-x86_64-dvd1.iso
+      centos9: CentOS-Stream-9-latest-x86_64-dvd1.iso
+      clear-linux: clear-43800-live-desktop.iso
+      edubuntu-24.04.3: edubuntu-24.04.3-desktop-amd64.iso
+      edubuntu-25.04: edubuntu-25.04-desktop-amd64.iso
+      fedora-kde: Fedora-KDE-Desktop-Live-42-1.1.x86_64.iso
+      fedora-server: Fedora-Server-dvd-x86_64-42-1.1.iso
+      fedora-workstation: Fedora-Workstation-Live-42-1.1.x86_64.iso
+      kubuntu-25.04: kubuntu-25.04-desktop-amd64.iso
+      lubuntu-24.04.3: lubuntu-24.04.3-desktop-amd64.iso
+      lubuntu-25.04: lubuntu-25.04-desktop-amd64.iso
+      netgate-installer: netgate-installer-v1.0-RC-amd64-20240919-1435.iso
+      opensuse-leap: openSUSE-Leap-15.6-DVD-x86_64-Media.iso
+      opensuse-microos: openSUSE-MicroOS-DVD-x86_64-Current.iso
+      opensuse-tumbleweed: openSUSE-Tumbleweed-DVD-x86_64-Current.iso
+      opnsense: OPNsense-25.7-dvd-amd64.iso
+      proxmox-ve-9.0: proxmox-ve_9.0-1.iso
+      rhel-10: rhel-10.0-x86_64-dvd.iso
+      rhel-9.6: rhel-9.6-x86_64-dvd.iso
+      ubuntu-20.04: ubuntu-20.04.6-live-server-amd64.iso
+      ubuntu-22.04: ubuntu-22.04.5-live-server-amd64.iso
+      ubuntu-24.04.3: ubuntu-24.04.3-desktop-amd64.iso
+      ubuntu-25.04: ubuntu-25.04-desktop-amd64.iso
+      ubuntu-25.04-server: ubuntu-25.04-live-server-amd64.iso
+      ubuntu-budgie-24.04.3: ubuntu-budgie-24.04.3-desktop-amd64.iso
+      ubuntu-budgie-25.04: ubuntu-budgie-25.04-desktop-amd64.iso
+      ubuntucinnamon-24.04.3: ubuntucinnamon-24.04.3-desktop-amd64.iso
+      ubuntucinnamon-25.04: ubuntucinnamon-25.04-desktop-amd64.iso
+      ubuntu-mate-24.04.3: ubuntu-mate-24.04.3-desktop-amd64.iso
+      ubuntu-mate-25.04: ubuntu-mate-25.04-desktop-amd64.iso
+      ubuntustudio-24.04.3: ubuntustudio-24.04.3-dvd-amd64.iso
+      ubuntu-unity-25.04: ubuntu-unity-25.04-desktop-amd64.iso
+      virtio-win: virtio-win.iso
+      win10-ent: Windows_10_Enterprise.iso
+      win10-ltsc: Windows_10_Enterprise_LTSC.iso
+      win11-ent: Windows_11_Enterprise.iso
+      win11-ltsc: Windows_11_Enterprise_LTSC.iso
+      windows-server-2019: Windows_Server_2019.iso
+      windows-server-2022: Windows_Server_2022.iso
+      windows-server-2025: Windows_Server_2025.iso
+
+  tasks:
+    - name: Debug deployment variables
+      debug:
+        msg:
+          - "Deploying {{ vm_name }} (VMID {{ vm_id }}) on {{ proxmox_node }}"
+          - "OS variant: {{ os_variant }}"
+
+    - name: Check if VM already exists
+      delegate_to: "{{ proxmox_node }}"
+      shell: qm status {{ vm_id }}
+      register: vm_exists
+      failed_when: false
+      changed_when: false
+
+    - name: Create VM (no efidisk0/tpmstate0 yet)
+      delegate_to: "{{ proxmox_node }}"
+      shell: >-
+        {{
+          (
+            'qm create ' ~ vm_id ~
+            ' --name ' ~ vm_name ~
+            ' --memory ' ~ memory ~
+            ' --cores ' ~ cores ~
+            ' --sockets ' ~ sockets ~
+            ((' --cpu ' ~ cpu_model) if cpu_model|default('')|trim != '' else '') ~
+            ' --net0 ' ~ (net0|trim) ~
+            ' --boot ' ~ boot ~
+            ' --machine ' ~ machine ~
+            ' --bios ' ~ bios ~
+            ' --scsihw ' ~ scsihw ~
+            ' --agent ' ~ agent ~
+            ' --numa ' ~ numa ~
+            (
+              ' --ostype ' ~ ostype ~
+              ' --sata3 local-lvm:' ~ (disk_size | trim | regex_replace('(?i)gb', '')) ~
+              ' --sata0 ' ~ "'iso-share:iso/" ~ iso_map[os_variant|trim] ~ ",media=cdrom'" ~
+              ' --sata1 ' ~ "'iso-share:iso/" ~ iso_map['virtio-win'] ~ ",media=cdrom'"
+              if os_variant is match('^(win|Windows)') else
+              ' --ide2 ' ~ "'iso-share:iso/" ~ iso_map[os_variant|trim] ~ ",media=cdrom'" ~
+              ' --sata0 ' ~ "'local-lvm:" ~ (disk_size | trim | regex_replace('(?i)gb', '')) ~ "'"
+              if os_type in ['linux', 'firewall'] and iso_map.get(os_variant|trim) else
+              ' --sata0 ' ~ "'local-lvm:" ~ (disk_size | trim | regex_replace('(?i)gb', '')) ~ "'"
+            )
+          ) | regex_replace('\s+', ' ')
+        }}
+      when:
+        - vm_exists.rc != 0
+        - vm_exists.stderr is not defined or
+          ('already exists' not in vm_exists.stderr)
+      args:
+        executable: /bin/bash
+
+    - name: Set efidisk0 and tpmstate0 on all VMs (after creation, only once)
+      delegate_to: "{{ proxmox_node }}"
+      shell: |
+        qm set {{ vm_id }} \
+          --efidisk0 local-lvm:4,efitype=4m,pre-enrolled-keys=1 \
+          --tpmstate0 local-lvm:4,version=v2.0
+      when: vm_exists.rc != 0
+
+    - name: Set final boot order (for Windows and Linux, safe to repeat)
+      delegate_to: "{{ proxmox_node }}"
+      shell: >-
+        qm set {{ vm_id }} --boot '{{ boot }}'
+      when:
+        - "'ide2' not in boot or (ide2 is defined and ide2 != 'omit')"
+
+    - name: Display final VM list on host
+      delegate_to: "{{ proxmox_node }}"
+      shell: qm list
+      register: vm_list
+      changed_when: false
+
+    - name: Show VM list
+      debug:
+        var: vm_list.stdout_lines
+
+    - name: Save CSV summary of created VMs
+      delegate_to: localhost
+      run_once: true
+      copy:
+        dest: "./proxmox_vm_creation_summary.csv"
+        content: |
+          VMID,VMNAME,OS_VARIANT,PROXMOX_NODE
+          {% for host in groups['deploy_target'] %}
+          {{ hostvars[host]['vm_id'] }},{{ hostvars[host]['vm_name'] }},{{ hostvars[host]['os_variant'] }},{{ hostvars[host]['proxmox_node'] }}
+          {% endfor %}
+          {% for host in groups['deploy_target'] %}
+          {{ hostvars[host]['vm_id'] }},{{ hostvars[host]['vm_name'] }},{{ hostvars[host]['os_variant'] }},{{ hostvars[host]['proxmox_node'] }}
+          {% endfor %}
+          {% for host in groups['deploy_target'] %}
+          {{ hostvars[host]['vm_id'] }},{{ hostvars[host]['vm_name'] }},{{ hostvars[host]['os_variant'] }},{{ hostvars[host]['proxmox_node'] }}
+          {% endfor %}
+          {{ hostvars[host]['vm_id'] }},{{ hostvars[host]['vm_name'] }},{{ hostvars[host]['os_variant'] }},{{ hostvars[host]['proxmox_node'] }}
+          {% endfor %}

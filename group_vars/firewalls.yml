@@ -1,0 +1,10 @@
+# Only the firewall ISOs you provided
+iso_map:
+  opnsense-25.7: OPNsense-25.7-dvd-amd64.iso
+  netgate-installer-20240919: netgate-installer-v1.0-RC-amd64-20240919-1435.iso
+
+# Proxmox ISO storage (path: /mnt/pve/<pool>/template/iso/*.iso)
+default_storage_pool: iso-share
+
+# Where to create the VM disk(s)
+disk_storage_pool: local-lvm

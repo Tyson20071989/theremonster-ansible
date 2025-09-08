@@ -1,0 +1,21 @@
+- name: Update Proxmox and run script
+  hosts: proxmox
+  become: yes
+  become_method: su
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Upgrade packages
+      apt:
+        upgrade: dist
+
+    - name: Copy script to Proxmox node
+      copy:
+        src: ../files/setup.sh
+        dest: /root/setup.sh
+        mode: '0755'
+
+    - name: Run the setup script
+      command: /root/setup.sh

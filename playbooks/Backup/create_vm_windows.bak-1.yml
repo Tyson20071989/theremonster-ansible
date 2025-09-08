@@ -1,0 +1,295 @@
+---
+- name: Create Windows VM on Proxmox (menu-driven, tuned for performance)
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - "../../group_vars/windows.yml"   # contains: iso_map, default_storage_pool, disk_storage_pool, virtio_iso
+
+  vars_prompt:
+    - name: selected_node
+      prompt: |
+        Select Proxmox node:
+        1) remonster-1
+        2) remonster-2
+        3) remonster-3
+        4) remonster-4
+        5) remonster-5
+        [Default: 1]
+      private: no
+
+    - name: windows_family_choice
+      prompt: |
+        Select Windows family:
+        1) Windows Client
+        2) Windows Server
+        [Default: 1]
+      private: no
+
+    - name: bios_type_choice
+      prompt: |
+        Select BIOS type:
+        1) seabios
+        2) ovmf
+        [Default: 2]
+      private: no
+
+    - name: disk_size_choice
+      prompt: |
+        Select disk size:
+        1) 40G
+        2) 60G
+        3) 80G
+        4) 120G
+        [Default: 2]
+      private: no
+
+    - name: cpu_choice
+      prompt: |
+        Select number of vCPUs:
+        1) 2
+        2) 4
+        3) 8
+        4) 16
+        [Default: 2]
+      private: no
+
+    - name: ram_choice
+      prompt: |
+        Select RAM size:
+        1) 4096 MB
+        2) 8192 MB
+        3) 16384 MB
+        4) 32768 MB
+        [Default: 2]
+      private: no
+
+    - name: vmid
+      prompt: "Enter VM ID (e.g., 3001):"
+      private: no
+
+    - name: hostname
+      prompt: "Enter hostname (or leave blank to auto-generate):"
+      private: no
+
+  vars:
+    windows_families:
+      Windows Client:
+        - windows-10-enterprise
+        - windows-10-enterprise-ltsc
+        - windows-11-enterprise
+        - windows-11-enterprise-ltsc
+      Windows Server:
+        - windows-server-2019
+        - windows-server-2022
+        - windows-server-2025
+
+    disk_size_map:
+      "1": "40G"
+      "2": "60G"
+      "3": "80G"
+      "4": "120G"
+
+    cpu_map:
+      "1": 2
+      "2": 4
+      "3": 8
+      "4": 16
+
+    ram_map:
+      "1": 4096
+      "2": 8192
+      "3": 16384
+      "4": 32768
+
+    bios_map:
+      "1": seabios
+      "2": ovmf
+
+    # TPM required by default for Win11 and Server 2025
+    tpm_required_variants:
+      - windows-11-enterprise
+      - windows-11-enterprise-ltsc
+      - windows-server-2025
+
+  tasks:
+    # --- Guards ---
+    - name: Guard - default_storage_pool provided
+      assert:
+        that:
+          - default_storage_pool is defined
+          - default_storage_pool | string | length > 0
+        fail_msg: "default_storage_pool is not defined in group_vars/windows.yml (e.g., iso-share)."
+
+    - name: Guard - disk_storage_pool provided
+      assert:
+        that:
+          - disk_storage_pool is defined
+          - disk_storage_pool | string | length > 0
+        fail_msg: "disk_storage_pool is not defined in group_vars/windows.yml (e.g., local-lvm)."
+
+    # --- Node selection ---
+    - name: Define node options
+      set_fact:
+        node_options:
+          "1": remonster-1
+          "2": remonster-2
+          "3": remonster-3
+          "4": remonster-4
+          "5": remonster-5
+
+    - name: Map selected node
+      set_fact:
+        selected_node_mapped: "{{ node_options[selected_node | string | default('1')] }}"
+
+    # --- Family → Variant submenu ---
+    - name: Set family_list
+      set_fact:
+        family_list: [ 'Windows Client', 'Windows Server' ]
+
+    - name: Set selected_family
+      set_fact:
+        selected_family: "{{ family_list[(windows_family_choice | default('1')) | int - 1] }}"
+
+    - name: Build variant_list for chosen family
+      set_fact:
+        variant_list: >-
+          {%- set out = {} -%}
+          {%- for i in range(windows_families[selected_family] | length) -%}
+            {%- set _ = out.update({ (i+1) | string: windows_families[selected_family][i] }) -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Prompt for Windows variant (after family selection)
+      pause:
+        prompt: |
+          Select Windows variant:
+          {% for k, v in variant_list.items() %}
+            {{ k }}) {{ v }}
+          {% endfor %}
+          [Default: 1]
+      register: windows_variant_choice_prompt
+
+    - name: Map windows_variant_choice
+      set_fact:
+        windows_variant_choice: >-
+          {{
+            (windows_variant_choice_prompt.user_input
+              | default(windows_variant_choice_prompt.stdout, true)
+              | default(windows_variant_choice_prompt.pause, true)
+              | default('1', true))
+              | string
+          }}
+
+    - name: Map selections
+      set_fact:
+        windows_variant_resolved: "{{ variant_list[windows_variant_choice | string | default('1', true)] }}"
+        final_disk_size: "{{ disk_size_map[disk_size_choice | string | default('2', true)] }}"
+        final_ram: "{{ ram_map[ram_choice | string | default('2', true)] }}"
+        final_cpu: "{{ cpu_map[cpu_choice | string | default('2', true)] }}"
+        final_bios: "{{ bios_map[bios_type_choice | string | default('2', true)] }}"
+
+    # Hostname fallback
+    - name: Set final hostname (auto-generate if blank)
+      set_fact:
+        final_hostname: "{{ windows_variant_resolved ~ '-' ~ vmid if hostname is not defined or (hostname | trim | length == 0) else hostname | trim }}"
+
+    - name: Ensure final hostname is not empty
+      assert:
+        that:
+          - final_hostname | trim | length > 0
+        fail_msg: "Final hostname resolved to blank. Check fallback logic."
+
+    # --- ISO resolution & checks ---
+    - name: Resolve Windows ISO from iso_map
+      set_fact:
+        selected_iso: "{{ iso_map[windows_variant_resolved] | default('') }}"
+
+    - name: Fail if ISO mapping missing
+      fail:
+        msg: "Could not resolve ISO for selected variant '{{ windows_variant_resolved }}' from iso_map."
+      when: selected_iso == ''
+
+    - name: Verify Windows ISO exists on node
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: "[ -f /mnt/pve/{{ default_storage_pool }}/template/iso/{{ selected_iso }} ]"
+      register: iso_check
+      changed_when: false
+      failed_when: iso_check.rc != 0
+
+    - name: Check VirtIO ISO presence (optional)
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: "[ -f /mnt/pve/{{ default_storage_pool }}/template/iso/{{ virtio_iso }} ]"
+      register: virtio_check
+      changed_when: false
+      failed_when: false
+
+    - name: Escape ISO names for shell
+      set_fact:
+        selected_iso_escaped: "{{ selected_iso | regex_replace(' ', '\\\\ ') }}"
+        virtio_iso_escaped: "{{ virtio_iso | default('') | regex_replace(' ', '\\\\ ') }}"
+
+    # --- Safety: VMID collision check ---
+    - name: Check if VMID already exists
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: "qm status {{ vmid }}"
+      register: vmid_status
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if VMID already exists
+      fail:
+        msg: "VMID {{ vmid }} already exists on {{ selected_node_mapped }}. Choose a different VMID."
+      when: vmid_status.rc == 0
+
+    # --- Decide ostype: use win11 for Win11 and Server 2022/2025 (as recommended) ---
+    - name: Determine Proxmox ostype
+      set_fact:
+        final_ostype: >-
+          {{ 'win11' if ('windows-11' in windows_variant_resolved) or ('windows-server-2022' in windows_variant_resolved) or ('windows-server-2025' in windows_variant_resolved)
+             else 'win10' }}
+
+    # --- Create VM with performance-tuned settings ---
+    - name: Create Windows VM (SCSI/virtio-scsi-single, writeback cache, discard, iothread)
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: |
+        qm create {{ vmid }} \
+          --name {{ final_hostname }} \
+          --memory {{ final_ram }} \
+          --cores {{ final_cpu }} \
+          --cpu x86-64-v2-AES \
+          --agent enabled=1 \
+          --net0 virtio,bridge=vmbr0 \
+          --ide2 {{ default_storage_pool }}:iso/{{ selected_iso_escaped }},media=cdrom \
+          --boot order=ide2 \
+          --ostype {{ final_ostype }} \
+          --scsihw virtio-scsi-single \
+          --scsi0 {{ disk_storage_pool }}:{{ final_disk_size | regex_replace('G','') }},cache=writeback,discard=on,iothread=1 \
+          --bios {{ final_bios }} \
+          {% if final_bios == 'ovmf' %}--machine q35 \{% endif %}
+
+    - name: Add EFI disk for OVMF (pre-enrolled keys)
+      when: final_bios == 'ovmf'
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: |
+        qm set {{ vmid }} --efidisk0 {{ disk_storage_pool }}:0,pre-enrolled-keys=1
+
+    - name: Add TPM 2.0 for Win11/Server 2025 (OVMF only)
+      when: final_bios == 'ovmf' and windows_variant_resolved in tpm_required_variants
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: |
+        qm set {{ vmid }} --tpmstate0 {{ disk_storage_pool }}:0,version=v2.0
+
+    - name: Mount VirtIO drivers ISO on IDE 0 (if present)
+      when: virtio_check.rc == 0
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: |
+        qm set {{ vmid }} --ide0 {{ default_storage_pool }}:iso/{{ virtio_iso_escaped }},media=cdrom
+
+    - name: Start VM
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: qm start {{ vmid }}
+
+    - name: Warn if Win11 chosen with SeaBIOS (UEFI/TPM recommended)
+      when: "'windows-11' in windows_variant_resolved and final_bios == 'seabios'"
+      debug:
+        msg: "Warning: Windows 11 usually requires UEFI (OVMF) + TPM 2.0. You selected SeaBIOS; installation may fail."

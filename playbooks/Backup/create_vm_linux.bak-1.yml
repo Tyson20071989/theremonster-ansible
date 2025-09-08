@@ -1,0 +1,325 @@
+---
+- name: Create Linux VM on Proxmox (menu-driven and validated)
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - "../../group_vars/linux.yml"   # contains: iso_map, default_storage_pool
+
+  vars_prompt:
+    - name: selected_node
+      prompt: |
+        Select Proxmox node:
+        1) remonster-1
+        2) remonster-2
+        3) remonster-3
+        4) remonster-4
+        5) remonster-5
+        [Default: 1]
+      private: no
+
+    - name: linux_family_choice
+      prompt: |
+        Select Linux family:
+        1) Ubuntu Server
+        2) Ubuntu Desktop
+        3) Ubuntu Flavors
+        4) RHEL
+        5) CentOS
+        6) Fedora
+        7) openSUSE
+        8) ClearLinux
+        [Default: 1]
+      private: no
+
+    - name: bios_type_choice
+      prompt: |
+        Select BIOS type:
+        1) seabios
+        2) ovmf
+        [Default: 1]
+      private: no
+
+    - name: disk_format_choice
+      prompt: |
+        Select disk format:
+        1) qcow2
+        2) raw
+        [Default: 1]
+      private: no
+
+    - name: disk_size_choice
+      prompt: |
+        Select disk size:
+        1) 10G
+        2) 20G
+        3) 50G
+        4) 100G
+        [Default: 2]
+      private: no
+
+    - name: cpu_choice
+      prompt: |
+        Select number of vCPUs:
+        1) 1
+        2) 2
+        3) 4
+        4) 8
+        [Default: 2]
+      private: no
+
+    - name: ram_choice
+      prompt: |
+        Select RAM size:
+        1) 1024 MB
+        2) 2048 MB
+        3) 4096 MB
+        4) 8192 MB
+        5) 16384 MB
+        [Default: 2]
+      private: no
+
+    - name: vmid
+      prompt: "Enter VM ID (e.g., 201):"
+      private: no
+
+    - name: hostname
+      prompt: "Enter hostname (or leave blank to auto-generate):"
+      private: no
+
+    - name: vlan_choice
+      prompt: |
+        Select VLAN for VM network (default 8):
+        {% for vlan in vlan_options %}
+          {{ loop.index }}) {{ vlan.name }} ({{ vlan.id }})
+        {% endfor %}
+          0) Custom VLAN ID
+        Enter number [8] or custom VLAN ID:
+      private: no
+
+  vars:
+    linux_families:
+      Ubuntu Server:
+        - ubuntu-20.04
+        - ubuntu-22.04
+        - ubuntu-25.04
+      Ubuntu Desktop:
+        - ubuntu-24.04-desktop
+        - ubuntu-25.04-desktop
+      Ubuntu Flavors:
+        - ubuntu-budgie-24.04
+        - ubuntu-budgie-25.04
+        - ubuntucinnamon-24.04
+        - ubuntucinnamon-25.04
+        - ubuntu-mate-24.04
+        - ubuntu-mate-25.04
+        - ubuntu-unity-25.04
+        - ubuntustudio-24.04
+        - edubuntu-24.04
+        - edubuntu-25.04
+      RHEL:
+        - rhel-9.6
+        - rhel-10.0
+      CentOS:
+        - centos-9
+        - centos-10
+      Fedora:
+        - fedora-server-42
+        - fedora-workstation-42
+        - fedora-kde-42
+      openSUSE:
+        - opensuse-leap-15.6
+        - opensuse-microos
+        - opensuse-tumbleweed
+      ClearLinux:
+        - clearlinux
+    vlan_options:
+      - { name: "Backup", id: 500 }
+      - { name: "Dev2", id: 700 }
+      - { name: "Home", id: 1111 }
+      - { name: "Nas", id: 400 }
+      - { name: "admin.theremonster.lan", id: 200 }
+      - { name: "ceph", id: 600 }
+      - { name: "dev.theremonster.local", id: 250 }
+      - { name: "theremonster.lan(Default)", id: 100 }
+      - { name: "web.theremonster.local", id: 150 }
+
+    # Menu maps (string keys are intentional to avoid int/str coercion surprises)
+    disk_size_map:
+      "1": "10G"
+      "2": "20G"
+      "3": "50G"
+      "4": "100G"
+
+    cpu_map:
+      "1": 1
+      "2": 2
+      "3": 4
+      "4": 8
+
+    ram_map:
+      "1": 1024
+      "2": 2048
+      "3": 4096
+      "4": 8192
+      "5": 16384
+
+    disk_format_map:
+      "1": qcow2
+      "2": raw
+
+    bios_map:
+      "1": seabios
+      "2": ovmf
+
+  tasks:
+    - name: Guard - default_storage_pool provided
+      assert:
+        that:
+          - default_storage_pool is defined
+          - default_storage_pool | string | length > 0
+        fail_msg: "default_storage_pool is not defined. Set it in group_vars/linux.yml (e.g., iso-share)."
+
+    # --- Node mapping (split so facts exist before use) ---
+    - name: Define node options
+      set_fact:
+        node_options:
+          "1": remonster-1
+          "2": remonster-2
+          "3": remonster-3
+          "4": remonster-4
+          "5": remonster-5
+
+    - name: Map selected node
+      set_fact:
+        selected_node_mapped: "{{ node_options[selected_node | string | default('1')] }}"
+
+    # --- Family → Variant dynamic submenu ---
+    - name: Set family_list
+      set_fact:
+        family_list: [ 'Ubuntu Server', 'Ubuntu Desktop', 'Ubuntu Flavors', 'RHEL', 'CentOS', 'Fedora', 'openSUSE', 'ClearLinux' ]
+
+    - name: Set selected_family
+      set_fact:
+        selected_family: "{{ family_list[(linux_family_choice | default('1')) | int - 1] }}"
+
+    - name: Build variant_list for chosen family
+      set_fact:
+        variant_list: >-
+          {%- set out = {} -%}
+          {%- for i in range(linux_families[selected_family] | length) -%}
+            {%- set _ = out.update({ (i+1) | string: linux_families[selected_family][i] }) -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Prompt for Linux variant (after family selection)
+      pause:
+        prompt: |
+          Select Linux variant:
+          {% for k, v in variant_list.items() %}
+            {{ k }}) {{ v }}
+          {% endfor %}
+          [Default: 1]
+      register: linux_variant_choice_prompt
+
+    - name: Map linux_variant_choice
+      set_fact:
+        linux_variant_choice: >-
+          {{
+            (linux_variant_choice_prompt.user_input
+              | default(linux_variant_choice_prompt.stdout, true)
+              | default(linux_variant_choice_prompt.pause, true)
+              | default('1', true))
+              | string
+          }}
+
+    - name: Map variant and other selections
+      set_fact:
+        linux_variant_resolved: "{{ variant_list[linux_variant_choice | string | default('1')] }}"
+        final_disk_format: "{{ disk_format_map[disk_format_choice | string | default('1')] }}"
+        final_disk_size: "{{ disk_size_map[disk_size_choice | string | default('2')] }}"
+        final_ram: "{{ ram_map[ram_choice | string | default('2')] }}"
+        final_cpu: "{{ cpu_map[cpu_choice | string | default('2')] }}"
+        final_bios: "{{ bios_map[bios_type_choice | string | default('1')] }}"
+
+    # --- Hostname fallback (handles undefined, empty, or whitespace) ---
+    - name: Set final hostname (auto-generate if blank)
+      set_fact:
+        final_hostname: "{{ linux_variant_resolved ~ '-' ~ vmid if hostname is not defined or (hostname | trim | length == 0) else hostname | trim }}"
+
+    - name: Ensure final hostname is not empty
+      assert:
+        that:
+          - final_hostname | trim | length > 0
+        fail_msg: "Final hostname resolved to blank. Check fallback logic."
+
+    # --- Resolve ISO and verify presence on node ---
+    - name: Resolve ISO from iso_map
+      set_fact:
+        selected_iso: "{{ iso_map[linux_variant_resolved] | default('') }}"
+
+    - name: Fail if ISO mapping missing
+      fail:
+        msg: "Could not resolve ISO for selected variant '{{ linux_variant_resolved }}' from iso_map."
+      when: selected_iso == ''
+
+    - name: Verify ISO file exists on node
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: "[ -f /mnt/pve/{{ default_storage_pool }}/template/iso/{{ selected_iso }} ]"
+      register: iso_check
+      changed_when: false
+      failed_when: iso_check.rc != 0
+
+    # --- Safety: fail if VMID already exists ---
+    - name: Check if VMID already exists
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: "qm status {{ vmid }}"
+      register: vmid_status
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if VMID already exists
+      fail:
+        msg: "VMID {{ vmid }} already exists on {{ selected_node_mapped }}. Choose a different VMID."
+      when: vmid_status.rc == 0
+
+    # --- Map vlan_id ---
+    - name: Map vlan_id
+      set_fact:
+        vlan_id: >-
+          {% set val = vlan_choice | trim %}
+          {% if val.isdigit() and 1 <= val|int <= vlan_options|length %}
+            {{ vlan_options[val|int-1].id }}
+          {% elif val.isdigit() and val|int == 0 %}
+            ""
+          {% else %}
+            {{ val }}
+          {% endif %}
+
+    # --- Create VM (with OVMF extras when selected) ---
+    - name: Create VM on Proxmox node
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: |
+        qm create {{ vmid }} \
+          --name {{ final_hostname }} \
+          --memory {{ final_ram }} \
+          --cores {{ final_cpu }} \
+          --cpu x86-64-v2-AES \
+          --net0 virtio,bridge=vmbr0{% if vlan_id|trim %},tag={{ vlan_id|trim }}{% endif %} \
+          --ide2 {{ default_storage_pool }}:iso/{{ selected_iso }},media=cdrom \
+          --boot order=ide2 \
+          --ostype l26 \
+          --scsihw virtio-scsi-pci \
+          --scsi0 local-lvm:{{ final_disk_size | regex_replace('G','') }} \
+          --bios {{ final_bios }} \
+          {% if final_bios == 'ovmf' %}--machine q35 \
+          {% endif %}--agent enabled=1
+
+    - name: Add EFI disk for OVMF (pre-enrolled keys)
+      when: final_bios == 'ovmf'
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: |
+        qm set {{ vmid }} --efidisk0 local-lvm:0,pre-enrolled-keys=1
+
+    - name: Start VM
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: qm start {{ vmid }}

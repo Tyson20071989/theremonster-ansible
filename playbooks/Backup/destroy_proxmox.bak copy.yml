@@ -1,0 +1,163 @@
+---
+- name: Gather VM destruction choices
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    proxmox_group: proxmox
+
+  tasks:
+    - name: 1) Select Proxmox nodes
+      pause:
+        prompt: |
+          1) Select Proxmox nodes to target (comma-separated indices or 'all', default all):
+          {% for host in groups[proxmox_group] %}
+            {{ loop.index }}) {{ host }}
+          {% endfor %}
+          Enter selection [all]
+      register: node_selection
+      run_once: true
+
+    - name: Default to all nodes
+      set_fact:
+        target_nodes: "{{ groups[proxmox_group] }}"
+      run_once: true
+
+    - name: Override target_nodes when specific indices provided
+      set_fact:
+        target_nodes: >-
+          {{ node_selection.user_input
+             | trim
+             | split(',')
+             | map('trim')
+             | map('int')
+             | map('sub', 1)
+             | map('extract', groups[proxmox_group])
+             | list }}
+      when:
+        - node_selection.user_input is defined
+        - node_selection.user_input | trim | lower != 'all'
+        - node_selection.user_input | trim != ''
+      run_once: true
+
+    - name: 2) Enter VM IDs to destroy (comma-separated or 'all')
+      pause:
+        prompt: "2) Enter VM IDs to destroy, comma-separated, or 'all' to remove every VM:"
+      register: vm_ids_input
+      run_once: true
+
+    - name: Determine whether to delete all
+      set_fact:
+        delete_all: "{{ (vm_ids_input.user_input | default('all') | trim | lower) == 'all' }}"
+      run_once: true
+
+    - name: Parse vm_ids when not deleting all
+      set_fact:
+        vm_ids: "{{ vm_ids_input.user_input.split(',') | map('trim') | list }}"
+      when: not delete_all
+      run_once: true
+
+    - name: Confirm destruction
+      pause:
+        prompt: >
+          You are about to DESTROY
+          {% if delete_all %}ALL{% else %}VMs {{ vm_ids | join(', ') }}{% endif %}
+          on nodes {{ target_nodes | join(', ') }}.
+          This operation is irreversible.
+          Press ENTER to proceed or CTRL+C to abort.
+      run_once: true
+
+- name: Stop & destroy VMs on selected Proxmox nodes
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+
+    # ========== ALL VMs DESTRUCTION PATH ==========
+    - name: Gather all VM IDs per node (delete_all)
+      shell: qm list | awk 'NR>1 {print $1}'
+      delegate_to: "{{ item }}"
+      register: all_vm_ids_per_node
+      when: delete_all
+      loop: "{{ target_nodes }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Build node/vm_id pairs for all VMs on all nodes
+      set_fact:
+        all_vm_node_pairs: >-
+          [{% for result in all_vm_ids_per_node.results %}
+            {% set node = result.item %}
+            {% for vm in result.stdout_lines %}
+              {"node": "{{ node }}", "vm_id": "{{ vm }}"},
+            {% endfor %}
+          {% endfor %}]
+      when: delete_all
+
+    - name: Force-stop all VMs (delete_all)
+      shell: qm stop {{ item.vm_id }}
+      delegate_to: "{{ item.node }}"
+      loop: "{{ all_vm_node_pairs }}"
+      failed_when: false
+      when: delete_all
+
+    - name: Destroy all VMs (delete_all, only disks on /mnt/network-vms/)
+      shell: |
+        for disk in $(qm config {{ item.vm_id }} | awk -F, '{print $1}' | grep "/mnt/network-vms/"); do
+          qm disk unlink {{ item.vm_id }} ${disk%%:*} --force || true
+          qm disk delete {{ item.vm_id }} ${disk%%:*} --force || true
+        done
+        qm destroy {{ item.vm_id }} --skiplock
+      delegate_to: "{{ item.node }}"
+      loop: "{{ all_vm_node_pairs }}"
+      when: delete_all
+
+    # ========== SPECIFIED VMs DESTRUCTION PATH ==========
+    - name: Force-stop specified VMs
+      shell: qm stop {{ item.1 }}
+      delegate_to: "{{ item.0 }}"
+      loop: "{{ target_nodes | product(vm_ids) | list }}"
+      loop_control:
+        label: "node={{ item.0 }} vm={{ item.1 }}"
+      failed_when: false
+      when: not delete_all
+
+    - name: Destroy specified VMs (only disks on /mnt/network-vms/)
+      shell: |
+        for disk in $(qm config {{ item.1 }} | awk -F, '{print $1}' | grep "/mnt/network-vms/"); do
+          qm disk unlink {{ item.1 }} ${disk%%:*} --force || true
+          qm disk delete {{ item.1 }} ${disk%%:*} --force || true
+        done
+        qm destroy {{ item.1 }} --skiplock
+      delegate_to: "{{ item.0 }}"
+      loop: "{{ target_nodes | product(vm_ids) | list }}"
+      loop_control:
+        label: "node={{ item.0 }} vm={{ item.1 }}"
+      when: not delete_all
+
+    - name: Notify destruction complete
+      debug:
+        msg: >
+          {% if delete_all %}
+          All VMs have been destroyed on nodes: {{ target_nodes | join(', ') }}.
+          {% else %}
+          Specified VMs ({{ vm_ids | join(', ') }}) have been destroyed on nodes: {{ target_nodes | join(', ') }}.
+          {% endif %}
+
+    - name: Aggregate deleted VMs into a list
+      set_fact:
+        deleted_vms: "{{ deleted_vms | default([]) + [{'node': item.0, 'vm_id': item.1}] }}"
+      loop: "{{ target_nodes | product(vm_ids if not delete_all else all_vm_node_pairs | map(attribute='vm_id') | list) | list }}"
+      loop_control:
+        label: "node={{ item.0 }} vm={{ item.1 }}"
+
+    - name: Save CSV summary of deleted VMs
+      delegate_to: localhost
+      run_once: true
+      lineinfile:
+        path: "./proxmox_vm_deletion_summary.csv"
+        line: "{{ vm.node }},{{ vm.vm_id }}"
+        create: true
+      loop: "{{ deleted_vms }}"
+      loop_control:
+        label: "node={{ item.node }} vm={{ item.vm_id }}"

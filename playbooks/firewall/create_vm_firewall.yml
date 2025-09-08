@@ -1,0 +1,295 @@
+---
+- name: Create Firewall VM on Proxmox (1–2 NICs, tuned)
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - "../../group_vars/firewalls.yml"  # iso_map, default_storage_pool, disk_storage_pool
+
+  vars:
+    vlan_options:
+      - { name: "Backup", id: 500 }
+      - { name: "Dev2", id: 700 }
+      - { name: "Home", id: 1111 }
+      - { name: "Nas", id: 400 }
+      - { name: "admin.theremonster.lan", id: 200 }
+      - { name: "ceph", id: 600 }
+      - { name: "dev.theremonster.local", id: 250 }
+      - { name: "theremonster.lan(Default)", id: 100 }
+      - { name: "web.theremonster.local", id: 150 }
+
+    bridge_options:
+      - { name: "vmbr0 (Default)", id: "vmbr0" }
+      - { name: "vmbr1", id: "vmbr1" }
+      - { name: "vmbr2", id: "vmbr2" }
+      - { name: "vmbr_ceph", id: "vmbr_ceph" }
+      - { name: "vmbr_admin", id: "vmbr_admin" }
+
+    # Menu maps (string keys to avoid int/str mismatch)
+    variant_list:
+      "1": opnsense-25.7
+      "2": netgate-installer-20240919
+
+    nic_count_map:
+      "1": 1
+      "2": 2
+
+    # Firewall defaults
+    final_disk_size: "20G"
+    final_cpu: 2
+    final_ram: 2048
+    final_bios: ovmf
+
+  vars_prompt:
+    - name: selected_node
+      prompt: |
+        Select Proxmox node:
+        1) remonster-1
+        2) remonster-2
+        3) remonster-3
+        4) remonster-4
+        5) remonster-5
+        [Default: 1]
+      private: no
+
+    - name: firewall_variant_choice
+      prompt: |
+        Select firewall variant:
+        1) opnsense-25.7
+        2) netgate-installer-20240919
+        [Default: 1]
+      private: no
+
+    - name: nic_count_choice
+      prompt: |
+        NIC count:
+        1) 1 NIC
+        2) 2 NICs
+        [Default: 2]
+      private: no
+
+    # NIC1 selection
+    - name: bridge1_choice
+      prompt: |
+        Select bridge for NIC1 (default vmbr0):
+        {% for bridge in bridge_options %}
+          {{ loop.index }}) {{ bridge.name }}
+        {% endfor %}
+        Enter number [1]:
+      private: no
+
+    - name: vlan1_choice
+      prompt: |
+        Select VLAN for NIC1 (default 100):
+        {% for vlan in vlan_options %}
+          {{ loop.index }}) {{ vlan.name }} ({{ vlan.id }})
+        {% endfor %}
+          0) Custom VLAN ID
+        Enter number or custom VLAN ID:
+      private: no
+
+    # NIC2 selection (always prompt, but clarify in prompt)
+    - name: bridge2_choice
+      prompt: |
+        Select bridge for NIC2 (ignored if 1 NIC; default vmbr1):
+        {% for bridge in bridge_options %}
+          {{ loop.index }}) {{ bridge.name }}
+        {% endfor %}
+        Enter number [2]:
+      private: no
+
+    - name: vlan2_choice
+      prompt: |
+        Select VLAN for NIC2 (ignored if 1 NIC):
+        {% for vlan in vlan_options %}
+          {{ loop.index }}) {{ vlan.name }} ({{ vlan.id }})
+        {% endfor %}
+          0) Custom VLAN ID
+        Enter number or custom VLAN ID:
+      private: no
+
+    - name: vmid
+      prompt: "Enter VM ID (e.g., 4001):"
+      private: no
+
+    - name: hostname
+      prompt: "Enter hostname (or leave blank to auto-generate):"
+      private: no
+
+  tasks:
+    # --- Guards ---
+    # NOTE: You must define default_storage_pool and disk_storage_pool in group_vars/firewalls.yml
+    # Example:
+    # default_storage_pool: iso-share
+    # disk_storage_pool: local-lvm
+    - name: Guard - default_storage_pool provided
+      assert:
+        that:
+          - default_storage_pool is defined
+          - default_storage_pool | string | length > 0
+        fail_msg: "default_storage_pool is not defined in group_vars/firewalls.yml (e.g., iso-share)."
+
+    - name: Guard - disk_storage_pool provided
+      assert:
+        that:
+          - disk_storage_pool is defined
+          - disk_storage_pool | string | length > 0
+        fail_msg: "disk_storage_pool is not defined in group_vars/firewalls.yml (e.g., local-lvm)."
+
+    # --- Node selection ---
+    - name: Define node options
+      set_fact:
+        node_options:
+          "1": remonster-1
+          "2": remonster-2
+          "3": remonster-3
+          "4": remonster-4
+          "5": remonster-5
+
+    - name: Map selected node
+      set_fact:
+        selected_node_mapped: "{{ node_options[selected_node | string | default('1')] }}"
+
+    # --- Map selections ---
+    - name: Map variant/NICs/disk/CPU/RAM/BIOS
+      set_fact:
+        firewall_variant_resolved: "{{ variant_list[firewall_variant_choice | string | default('1')] }}"
+        nic_count: "{{ nic_count_map[nic_count_choice | string | default('2')] }}"
+        # Remove the following lines if you are not prompting for these choices:
+        # final_disk_size: "{{ disk_size_map[disk_size_choice | string | default('2')] }}"
+        # final_cpu: "{{ cpu_map[cpu_choice | string | default('2')] }}"
+        # final_ram: "{{ ram_map[ram_choice | string | default('2')] }}"
+        # final_bios: "{{ bios_map[bios_type_choice | string | default('1')] }}"
+        # Instead, just use the defaults already set in vars:
+        # final_disk_size, final_cpu, final_ram, final_bios
+
+    # --- Hostname fallback ---
+    - name: Set final hostname (auto-generate if blank)
+      set_fact:
+        final_hostname: "{{ firewall_variant_resolved ~ '-' ~ vmid if hostname is not defined or (hostname | trim | length == 0) else hostname | trim }}"
+
+    - name: Ensure final hostname is not empty
+      assert:
+        that:
+          - final_hostname | trim | length > 0
+        fail_msg: "Final hostname resolved to blank. Check fallback logic."
+
+    # --- Resolve ISO & verify ---
+    - name: Resolve ISO from iso_map
+      set_fact:
+        selected_iso: "{{ iso_map[firewall_variant_resolved] | default('') }}"
+
+    - name: Fail if ISO mapping missing
+      fail:
+        msg: "Could not resolve ISO for selected variant '{{ firewall_variant_resolved }}' from iso_map."
+      when: selected_iso == ''
+
+    - name: Verify ISO exists on node
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: "[ -f /mnt/pve/{{ default_storage_pool }}/template/iso/{{ selected_iso }} ]"
+      register: iso_check
+      changed_when: false
+      failed_when: iso_check.rc != 0
+
+    # --- Safety: VMID collision check ---
+    - name: Check if VMID already exists
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: "qm status {{ vmid }}"
+      register: vmid_status
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if VMID already exists
+      fail:
+        msg: "VMID {{ vmid }} already exists on {{ selected_node_mapped }}. Choose a different VMID."
+      when: vmid_status.rc == 0
+
+    - name: Map bridge1 selection to bridge name
+      set_fact:
+        bridge1: >-
+          {% set val = bridge1_choice | trim %}
+          {% if val.isdigit() and 1 <= val|int <= bridge_options|length %}
+            {{ bridge_options[val|int-1].id | trim }}
+          {% else %}
+            {{ bridge_options[0].id | trim }}
+          {% endif %}
+
+    - name: Map vlan1_id
+      set_fact:
+        vlan1_id: >-
+          {% set val = vlan1_choice | trim %}
+          {% if val.isdigit() and 1 <= val|int <= vlan_options|length %}
+            {{ vlan_options[val|int-1].id }}
+          {% elif val.isdigit() and val|int == 0 %}
+            ""
+          {% else %}
+            {{ val }}
+          {% endif %}
+
+    - name: Map bridge2 selection to bridge name
+      set_fact:
+        bridge2: >-
+          {% set val = bridge2_choice | default('2') | trim %}
+          {% if val.isdigit() and 1 <= val|int <= bridge_options|length %}
+            {{ bridge_options[val|int-1].id | trim }}
+          {% else %}
+            {{ (bridge_options[1].id if bridge_options|length > 1 else bridge_options[0].id) | trim }}
+          {% endif %}
+      when: nic_count|int == 2
+
+    - name: Map vlan2_id
+      set_fact:
+        vlan2_id: >-
+          {% set val = vlan2_choice | default('') | trim %}
+          {% if val.isdigit() and 1 <= val|int <= vlan_options|length %}
+            {{ vlan_options[val|int-1].id }}
+          {% elif val.isdigit() and val|int == 0 %}
+            ""
+          {% else %}
+            {{ val }}
+          {% endif %}
+      when: nic_count|int == 2
+
+    # --- Compute flags to avoid stray backslashes ---
+    - name: Compute OVMF machine flag and NET1 flag
+      set_fact:
+        ovmf_machine_flag: "{{ '--machine q35' if final_bios == 'ovmf' else '' }}"
+        net1_flag: >-
+          {% if nic_count | int == 2 %}
+            --net1 virtio,bridge={{ bridge2 }}{% if vlan2_id|trim %},tag={{ vlan2_id|trim }}{% endif %}
+          {% else %}
+            ""
+          {% endif %}
+
+    # --- Create VM (FreeBSD firewalls: use SCSI + virtio-scsi-single) ---
+    # Ostype: 'other' is fine for FreeBSD-based systems
+    - name: Create Firewall VM
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: |
+        qm create {{ vmid }} \
+          --name {{ final_hostname }} \
+          --memory {{ final_ram }} \
+          --cores {{ final_cpu }} \
+          --cpu x86-64-v2-AES \
+          --agent enabled=1 \
+          --net0 "virtio,bridge={{ bridge1 | trim }}{% if vlan1_id|trim %},tag={{ vlan1_id|trim }}{% endif %}"{% if nic_count|int == 2 %} --net1 "virtio,bridge={{ bridge2 | trim }}{% if vlan2_id|trim %},tag={{ vlan2_id|trim }}{% endif %}"{% endif %} \
+          --ide2 {{ default_storage_pool }}:iso/{{ selected_iso }},media=cdrom \
+          --boot order=ide2 \
+          --ostype other \
+          --scsihw virtio-scsi-single \
+          --scsi0 {{ disk_storage_pool }}:{{ final_disk_size | regex_replace('G','') }},cache=writeback,discard=on,iothread=1 \
+          --bios {{ final_bios }} {{ ovmf_machine_flag }}
+
+    - name: Add EFI disk for OVMF (pre-enrolled keys)
+      when: final_bios == 'ovmf'
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: |
+        qm set {{ vmid }} --efidisk0 {{ disk_storage_pool }}:0,pre-enrolled-keys=1
+
+    - name: Start VM
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: qm start {{ vmid }}
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: qm start {{ vmid }}
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: qm start {{ vmid }}
+
