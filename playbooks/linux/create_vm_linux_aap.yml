@@ -1,0 +1,304 @@
+---
+- name: Create Linux VM on Proxmox (AAP-friendly, no prompts)
+  hosts: localhost
+  gather_facts: false
+
+  # Keep your external vars file (expects: iso_map, default_storage_pool)
+  vars_files:
+    - "../../group_vars/linux.yml"
+
+  vars:
+    # Families & variants (same values you provided)
+    linux_families:
+      Ubuntu Server:
+        - ubuntu-20.04
+        - ubuntu-22.04
+        - ubuntu-25.04
+      Ubuntu Desktop:
+        - ubuntu-24.04-desktop
+        - ubuntu-25.04-desktop
+      Ubuntu Flavors:
+        - ubuntu-budgie-24.04
+        - ubuntu-budgie-25.04
+        - ubuntucinnamon-24.04
+        - ubuntucinnamon-25.04
+        - ubuntu-mate-24.04
+        - ubuntu-mate-25.04
+        - ubuntu-unity-25.04
+        - ubuntustudio-24.04
+        - edubuntu-24.04
+        - edubuntu-25.04
+      RHEL:
+        - rhel-9.6
+        - rhel-10.0
+      CentOS:
+        - centos-9
+        - centos-10
+      Fedora:
+        - fedora-server-42
+        - fedora-workstation-42
+        - fedora-kde-42
+      openSUSE:
+        - opensuse-leap-15.6
+        - opensuse-microos
+        - opensuse-tumbleweed
+      ClearLinux:
+        - clearlinux
+
+    # Node index → name map (so you can pass either index or name)
+    node_options:
+      "1": remonster-1
+      "2": remonster-2
+      "3": remonster-3
+      "4": remonster-4
+      "5": remonster-5
+
+    # Maps for normalization
+    bios_map:
+      "1": seabios
+      "2": ovmf
+      seabios: seabios
+      ovmf: ovmf
+    disk_format_map:
+      "1": qcow2
+      "2": raw
+      qcow2: qcow2
+      raw: raw
+    disk_size_map:
+      "64": "64G"
+      "128": "128G"
+      "256": "256G"
+      "512": "512G"
+    cpu_map:
+      "1": 1
+      "2": 2
+      "4": 4
+      "8": 8
+    ram_map:
+      "1024": 1024
+      "2048": 2048
+      "4096": 4096
+      "8192": 8192
+      "16384": 16384
+
+  tasks:
+    # --- Guards ---
+    - name: Guard - default_storage_pool provided
+      assert:
+        that:
+          - default_storage_pool is defined
+          - (default_storage_pool | string | length) > 0
+        fail_msg: "default_storage_pool is not defined. Set it in group_vars/linux.yml (e.g., iso-share)."
+
+    # --- Normalize selected node ---
+    - name: Normalize selected_node (accept name or index; default remonster-1)
+      set_fact:
+        selected_node_mapped: >-
+          {% if selected_node is defined and (selected_node | string | length) > 0 %}
+            {{ selected_node | string }}
+          {% elif selected_node_index is defined %}
+            {{ node_options[(selected_node_index | int) | string] | default('remonster-1') }}
+          {% else %}
+            remonster-1
+          {% endif %}
+
+    # --- Normalize Linux family and filter/validate variant (Option 1) ---
+    - name: Choose linux_family (default 'Ubuntu Server' if missing/invalid)
+      set_fact:
+        chosen_family: >-
+          {% set fam = (linux_family | default('Ubuntu Server')) | string %}
+          {{ fam if linux_families.get(fam) is defined else 'Ubuntu Server' }}
+
+    - name: Compute valid variants for chosen_family
+      set_fact:
+        valid_variants: "{{ linux_families[chosen_family] }}"
+
+    - name: Ensure chosen_family has variants
+      assert:
+        that:
+          - valid_variants is defined
+          - valid_variants | length > 0
+        fail_msg: "No variants defined for linux_family='{{ chosen_family }}'. Check linux_families map."
+
+    - name: Resolve linux_variant within chosen_family (auto-correct if invalid/blank)
+      set_fact:
+        linux_variant_resolved: >-
+          {% set cand = (linux_variant | default('') | string) %}
+          {% if cand in valid_variants %}
+            {{ cand }}
+          {% else %}
+            {{ valid_variants[0] }}
+          {% endif %}
+
+    - name: Variant selection summary
+      debug:
+        msg: >-
+          linux_family='{{ chosen_family }}';
+          requested_variant='{{ linux_variant | default('') }}';
+          using_variant='{{ linux_variant_resolved }}'
+
+    # --- Normalize BIOS / disk / CPU / RAM ---
+    - name: Normalize BIOS type (default seabios)
+      set_fact:
+        final_bios: "{{ bios_map[(bios_type | default('seabios')) | string] | default('seabios') }}"
+
+    - name: Normalize disk format (default qcow2)
+      set_fact:
+        final_disk_format: "{{ disk_format_map[(disk_format | default('qcow2')) | string] | default('qcow2') }}"
+
+    - name: Normalize disk size (default 128G)
+      set_fact:
+        final_disk_size: "{{ disk_size_map[((disk_size_gb | default(128)) | int) | string] | default('128G') }}"
+
+    - name: Normalize CPU count (default 2)
+      set_fact:
+        final_cpu: "{{ cpu_map[((cpu_count | default(2)) | int) | string] | default(2) }}"
+
+    - name: Normalize RAM MB (default 2048)
+      set_fact:
+        final_ram: "{{ ram_map[((ram_mb | default(2048)) | int) | string] | default(2048) }}"
+
+    # --- VM count / IDs / hostnames ---
+    - name: Normalize VM count (default 1)
+      set_fact:
+        vm_count_int: "{{ (vm_count | default(1)) | int }}"
+
+    - name: Guard - starting VMID must be provided
+      assert:
+        that:
+          - vmid is defined
+          - (vmid | string | length) > 0
+          - (vmid | int) > 0
+        fail_msg: "You must provide starting VMID (vmid)."
+
+    - name: Derive vmid_start
+      set_fact:
+        vmid_start: "{{ vmid | int }}"
+
+    - name: Set final hostname (auto-generate if blank)
+      set_fact:
+        final_hostname: >-
+          {% set hn = hostname | default('') | trim %}
+          {% if hn | length == 0 %}
+            {{ linux_variant_resolved ~ '-' ~ (vmid_start | int) }}
+          {% else %}
+            {{ hn }}
+          {% endif %}
+
+    - name: Ensure final hostname is not empty
+      assert:
+        that:
+          - (final_hostname | trim | length) > 0
+        fail_msg: "Final hostname resolved to blank. Check fallback logic."
+
+    # --- VLAN handling (blank = untagged) ---
+    - name: Normalize VLAN id
+      set_fact:
+        vlan_id_norm: >-
+          {% if vlan_id is not defined or (vlan_id | string | trim) == '' %}
+            ''
+          {% else %}
+            {{ (vlan_id | int) }}
+          {% endif %}
+
+    # --- Resolve ISO and verify presence on node ---
+    - name: Resolve ISO from iso_map
+      set_fact:
+        selected_iso: "{{ iso_map[linux_variant_resolved] | default('') }}"
+
+    - name: Fail if ISO mapping missing
+      fail:
+        msg: "Could not resolve ISO for '{{ linux_variant_resolved }}' from iso_map."
+      when: selected_iso == ''
+
+    - name: Verify ISO file exists on node
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: "[ -f /mnt/pve/{{ default_storage_pool }}/template/iso/{{ selected_iso }} ]"
+      register: iso_check
+      changed_when: false
+      failed_when: iso_check.rc != 0
+
+    # --- Safety: prevent ID conflicts ---
+    - name: Check if starting VMID already exists
+      delegate_to: "{{ selected_node_mapped }}"
+      shell: "qm status {{ vmid_start }}"
+      register: vmid_status
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if starting VMID already exists
+      fail:
+        msg: "VMID {{ vmid_start }} already exists on {{ selected_node_mapped }}. Choose a different VMID."
+      when: vmid_status.rc == 0
+
+    # --- Build batch and create VMs ---
+    - name: Build VM list for batch creation
+      set_fact:
+        vm_batch: "{{ range(0, vm_count_int | int) | list }}"
+
+    - name: Create VMs on Proxmox node
+      delegate_to: "{{ selected_node_mapped }}"
+      loop: "{{ vm_batch }}"
+      loop_control:
+        loop_var: idx
+      vars:
+        this_vmid: "{{ (vmid_start | int + idx | int) | string }}"
+        this_hostname: >-
+          {% if (hostname | default('') | trim) == '' %}
+            {{ linux_variant_resolved ~ '-' ~ (vmid_start | int + idx | int) }}
+          {% elif vm_count_int | int > 1 %}
+            {{ (hostname | trim) ~ '-' ~ (idx | int + 1) }}
+          {% else %}
+            {{ hostname | trim }}
+          {% endif %}
+        net0_arg: >-
+          virtio,bridge=vmbr0{% if (vlan_id_norm | string | length) > 0 %},tag={{ vlan_id_norm }}{% endif %}
+        base_args:
+          - qm
+          - create
+          - "{{ this_vmid }}"
+          - --name
+          - "{{ this_hostname | trim }}"
+          - --memory
+          - "{{ final_ram }}"
+          - --cores
+          - "{{ final_cpu }}"
+          - --cpu
+          - x86-64-v2-AES
+          - --net0
+          - "{{ net0_arg }}"
+          - --ide2
+          - "{{ default_storage_pool }}:iso/{{ selected_iso }},media=cdrom"
+          - --boot
+          - order=ide2
+          - --ostype
+          - l26
+          - --scsihw
+          - virtio-scsi-pci
+          - --scsi0
+          - "local-lvm:{{ final_disk_size | regex_replace('G','') }}"
+          - --bios
+          - "{{ final_bios }}"
+        argv_list: "{{ base_args + (['--machine','q35'] if final_bios == 'ovmf' else []) + ['--agent','enabled=1'] }}"
+      command:
+        argv: "{{ argv_list }}"
+
+    - name: Add EFI disk for OVMF (pre-enrolled keys)
+      when: final_bios == 'ovmf'
+      delegate_to: "{{ selected_node_mapped }}"
+      loop: "{{ vm_batch }}"
+      loop_control:
+        loop_var: idx
+      vars:
+        this_vmid: "{{ (vmid_start | int + idx | int) | string }}"
+      shell: |
+        qm set {{ this_vmid }} --efidisk0 local-lvm:0,pre-enrolled-keys=1
+
+    - name: Start VMs
+      delegate_to: "{{ selected_node_mapped }}"
+      loop: "{{ vm_batch }}"
+      loop_control:
+        loop_var: idx
+      vars:
+        this_vmid: "{{ (vmid_start | int + idx | int) | string }}"
+      shell: qm start {{ this_vmid }}
