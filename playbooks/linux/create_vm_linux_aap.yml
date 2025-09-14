@@ -5,7 +5,7 @@
 
   # Expects in group_vars/linux.yml:
   #   iso_map: { <variant>: <iso filename> }
-  #   default_storage_pool: <proxmox storage name, e.g. iso-share>
+  #   default_storage_pool: <proxmox storage id, e.g., iso-share or nas-iso>
   vars_files:
     - "../../group_vars/linux.yml"
 
@@ -103,6 +103,10 @@
           {% else %}
             remonster-1
           {% endif %}
+
+    - name: Canonicalize target node (hard-trim)
+      set_fact:
+        node_target: "{{ (selected_node_mapped | string | trim) }}"
 
     # --- Linux family & variant (Option 1: auto-correct) ----------------------
     - name: Choose linux_family (trim + case-insensitive, default 'Ubuntu Server')
@@ -205,6 +209,22 @@
             {{ (vlan_id | int) }}
           {% endif %}
 
+    # --- Preflight (optional) -------------------------------------------------
+    - name: Preflight summary
+      debug:
+        msg:
+          node: "{{ node_target }}"
+          family: "{{ chosen_family }}"
+          variant: "{{ linux_variant_resolved }}"
+          iso: "{{ selected_iso | default('') }}"
+          storage_pool: "{{ default_storage_pool }}"
+          vmid_start: "{{ vmid_start }}"
+          vm_count: "{{ vm_count_int }}"
+          bios: "{{ final_bios }}"
+          cpu: "{{ final_cpu }}"
+          ram_mb: "{{ final_ram }}"
+          vlan: "{{ vlan_id_norm | default('') }}"
+
     # --- Resolve ISO and verify presence on node ------------------------------
     - name: Resolve ISO from iso_map
       set_fact:
@@ -216,7 +236,7 @@
       when: selected_iso == ''
 
     - name: Verify ISO file exists on node
-      delegate_to: "{{ selected_node_mapped }}"
+      delegate_to: "{{ node_target }}"
       shell: "[ -f /mnt/pve/{{ default_storage_pool }}/template/iso/{{ selected_iso }} ]"
       register: iso_check
       changed_when: false
@@ -224,7 +244,7 @@
 
     # --- Safety: prevent ID conflicts -----------------------------------------
     - name: Check if starting VMID already exists
-      delegate_to: "{{ selected_node_mapped }}"
+      delegate_to: "{{ node_target }}"
       shell: "qm status {{ vmid_start }}"
       register: vmid_status
       changed_when: false
@@ -232,7 +252,7 @@
 
     - name: Fail if starting VMID already exists
       fail:
-        msg: "VMID {{ vmid_start }} already exists on {{ selected_node_mapped }}. Choose a different VMID."
+        msg: "VMID {{ vmid_start }} already exists on {{ node_target }}. Choose a different VMID."
       when: vmid_status.rc == 0
 
     # --- Build batch and create VMs -------------------------------------------
@@ -241,7 +261,7 @@
         vm_batch: "{{ range(0, vm_count_int | int) | list }}"
 
     - name: Create VMs on Proxmox node
-      delegate_to: "{{ selected_node_mapped }}"
+      delegate_to: "{{ node_target }}"
       loop: "{{ vm_batch }}"
       loop_control:
         loop_var: idx
@@ -289,7 +309,7 @@
 
     - name: Add EFI disk for OVMF (pre-enrolled keys)
       when: final_bios == 'ovmf'
-      delegate_to: "{{ selected_node_mapped }}"
+      delegate_to: "{{ node_target }}"
       loop: "{{ vm_batch }}"
       loop_control:
         loop_var: idx
@@ -299,7 +319,7 @@
         qm set {{ this_vmid }} --efidisk0 local-lvm:0,pre-enrolled-keys=1
 
     - name: Start VMs
-      delegate_to: "{{ selected_node_mapped }}"
+      delegate_to: "{{ node_target }}"
       loop: "{{ vm_batch }}"
       loop_control:
         loop_var: idx
