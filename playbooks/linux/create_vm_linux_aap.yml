@@ -3,12 +3,14 @@
   hosts: localhost
   gather_facts: false
 
-  # Keep your external vars file (expects: iso_map, default_storage_pool)
+  # Expects in group_vars/linux.yml:
+  #   iso_map: { <variant>: <iso filename> }
+  #   default_storage_pool: <proxmox storage name, e.g. iso-share>
   vars_files:
     - "../../group_vars/linux.yml"
 
   vars:
-    # Families & variants (same values you provided)
+    # Families & variants (same as your original)
     linux_families:
       Ubuntu Server:
         - ubuntu-20.04
@@ -45,7 +47,7 @@
       ClearLinux:
         - clearlinux
 
-    # Node index → name map (so you can pass either index or name)
+    # Node index → name map (lets you pass name or index)
     node_options:
       "1": remonster-1
       "2": remonster-2
@@ -53,7 +55,7 @@
       "4": remonster-4
       "5": remonster-5
 
-    # Maps for normalization
+    # Normalization maps
     bios_map:
       "1": seabios
       "2": ovmf
@@ -82,7 +84,7 @@
       "16384": 16384
 
   tasks:
-    # --- Guards ---
+    # --- Guards ---------------------------------------------------------------
     - name: Guard - default_storage_pool provided
       assert:
         that:
@@ -90,24 +92,26 @@
           - (default_storage_pool | string | length) > 0
         fail_msg: "default_storage_pool is not defined. Set it in group_vars/linux.yml (e.g., iso-share)."
 
-    # --- Normalize selected node ---
+    # --- Normalize selected node ---------------------------------------------
     - name: Normalize selected_node (accept name or index; default remonster-1)
       set_fact:
         selected_node_mapped: >-
-          {% if selected_node is defined and (selected_node | string | length) > 0 %}
-            {{ selected_node | string }}
+          {% if selected_node is defined and (selected_node | string | trim | length) > 0 %}
+            {{ selected_node | string | trim }}
           {% elif selected_node_index is defined %}
             {{ node_options[(selected_node_index | int) | string] | default('remonster-1') }}
           {% else %}
             remonster-1
           {% endif %}
 
-    # --- Normalize Linux family and filter/validate variant (Option 1) ---
-    - name: Choose linux_family (default 'Ubuntu Server' if missing/invalid)
+    # --- Linux family & variant (Option 1: auto-correct) ----------------------
+    - name: Choose linux_family (trim + case-insensitive, default 'Ubuntu Server')
       set_fact:
         chosen_family: >-
-          {% set fam = (linux_family | default('Ubuntu Server')) | string %}
-          {{ fam if linux_families.get(fam) is defined else 'Ubuntu Server' }}
+          {%- set fam_raw = (linux_family | default('Ubuntu Server') | string | trim) -%}
+          {%- set families = linux_families.keys() | list -%}
+          {%- set fam_map = dict(families | map('lower') | list | zip(families)) -%}
+          {{ fam_map.get(fam_raw | lower, 'Ubuntu Server') }}
 
     - name: Compute valid variants for chosen_family
       set_fact:
@@ -123,12 +127,12 @@
     - name: Resolve linux_variant within chosen_family (auto-correct if invalid/blank)
       set_fact:
         linux_variant_resolved: >-
-          {% set cand = (linux_variant | default('') | string) %}
-          {% if cand in valid_variants %}
+          {%- set cand = (linux_variant | default('') | string | trim) -%}
+          {%- if cand in valid_variants -%}
             {{ cand }}
-          {% else %}
+          {%- else -%}
             {{ valid_variants[0] }}
-          {% endif %}
+          {%- endif -%}
 
     - name: Variant selection summary
       debug:
@@ -137,28 +141,28 @@
           requested_variant='{{ linux_variant | default('') }}';
           using_variant='{{ linux_variant_resolved }}'
 
-    # --- Normalize BIOS / disk / CPU / RAM ---
+    # --- Normalize BIOS / disk / CPU / RAM -----------------------------------
     - name: Normalize BIOS type (default seabios)
       set_fact:
-        final_bios: "{{ bios_map[(bios_type | default('seabios')) | string] | default('seabios') }}"
+        final_bios: "{{ bios_map[(bios_type | default('seabios') | string | trim)] | default('seabios') }}"
 
     - name: Normalize disk format (default qcow2)
       set_fact:
-        final_disk_format: "{{ disk_format_map[(disk_format | default('qcow2')) | string] | default('qcow2') }}"
+        final_disk_format: "{{ disk_format_map[(disk_format | default('qcow2') | string | trim)] | default('qcow2') }}"
 
     - name: Normalize disk size (default 128G)
       set_fact:
-        final_disk_size: "{{ disk_size_map[((disk_size_gb | default(128)) | int) | string] | default('128G') }}"
+        final_disk_size: "{{ disk_size_map[((disk_size_gb | default(128)) | int | string)] | default('128G') }}"
 
     - name: Normalize CPU count (default 2)
       set_fact:
-        final_cpu: "{{ cpu_map[((cpu_count | default(2)) | int) | string] | default(2) }}"
+        final_cpu: "{{ cpu_map[((cpu_count | default(2)) | int | string)] | default(2) }}"
 
     - name: Normalize RAM MB (default 2048)
       set_fact:
-        final_ram: "{{ ram_map[((ram_mb | default(2048)) | int) | string] | default(2048) }}"
+        final_ram: "{{ ram_map[((ram_mb | default(2048)) | int | string)] | default(2048) }}"
 
-    # --- VM count / IDs / hostnames ---
+    # --- VM count / IDs / hostnames ------------------------------------------
     - name: Normalize VM count (default 1)
       set_fact:
         vm_count_int: "{{ (vm_count | default(1)) | int }}"
@@ -191,7 +195,7 @@
           - (final_hostname | trim | length) > 0
         fail_msg: "Final hostname resolved to blank. Check fallback logic."
 
-    # --- VLAN handling (blank = untagged) ---
+    # --- VLAN handling (blank = untagged) -------------------------------------
     - name: Normalize VLAN id
       set_fact:
         vlan_id_norm: >-
@@ -201,7 +205,7 @@
             {{ (vlan_id | int) }}
           {% endif %}
 
-    # --- Resolve ISO and verify presence on node ---
+    # --- Resolve ISO and verify presence on node ------------------------------
     - name: Resolve ISO from iso_map
       set_fact:
         selected_iso: "{{ iso_map[linux_variant_resolved] | default('') }}"
@@ -218,7 +222,7 @@
       changed_when: false
       failed_when: iso_check.rc != 0
 
-    # --- Safety: prevent ID conflicts ---
+    # --- Safety: prevent ID conflicts -----------------------------------------
     - name: Check if starting VMID already exists
       delegate_to: "{{ selected_node_mapped }}"
       shell: "qm status {{ vmid_start }}"
@@ -231,7 +235,7 @@
         msg: "VMID {{ vmid_start }} already exists on {{ selected_node_mapped }}. Choose a different VMID."
       when: vmid_status.rc == 0
 
-    # --- Build batch and create VMs ---
+    # --- Build batch and create VMs -------------------------------------------
     - name: Build VM list for batch creation
       set_fact:
         vm_batch: "{{ range(0, vm_count_int | int) | list }}"
