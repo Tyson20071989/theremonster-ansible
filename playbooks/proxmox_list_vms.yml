@@ -3,10 +3,10 @@
   hosts: localhost
   gather_facts: false
   vars:
-    proxmox_host: "10.200.7.10"       # Your Proxmox cluster API endpoint (any node works)
-    proxmox_user: "root@pam"          # Proxmox user with API access
-    proxmox_password: "{{ lookup('env', 'PROXMOX_PASSWORD') }}"  # We will use AAP credentials
-    validate_certs: false             # Set to true if you have valid SSL certs
+    proxmox_host: "10.200.7.10"       # Proxmox cluster API endpoint (any node works)
+    proxmox_user: "{{ ansible_user }}"   # Provided by AAP credential
+    proxmox_password: "{{ ansible_password }}"  # Provided by AAP credential
+    validate_certs: false
 
   tasks:
     - name: Get all VMs from all nodes
