@@ -20,16 +20,16 @@
       register: cluster_resources
       failed_when: cluster_resources.status != 200
 
-    - name: Filter only QEMU VMs
+    - name: Extract QEMU VM list
       set_fact:
         vms: "{{ cluster_resources.json.data | selectattr('type','equalto','qemu') | list }}"
 
     - name: Print VMs grouped by node
       debug:
         msg: |
-          {% for node in vms | groupby('node') %}
-          Node: {{ node.0 }}
-          {% for vm in node.1 %}
+          {% for node, node_vms in vms | groupby('node') %}
+          Node: {{ node }}
+          {% for vm in node_vms %}
             VMID: {{ vm.vmid }} | Name: {{ vm.name }} | Status: {{ vm.status }}
           {% endfor %}
           {% endfor %}
