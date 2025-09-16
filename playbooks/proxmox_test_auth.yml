@@ -1,46 +1,48 @@
 ---
-- name: Get running VMs from Proxmox nodes
+- name: List running VMs on Proxmox nodes
   hosts: localhost
   gather_facts: false
   vars:
-    proxmox_user: "ansible@pve"
-    proxmox_token_id: "ansible-token"
-    proxmox_token_secret: "{{ ansible_password }}"
-    validate_certs: false
-    target_node: "all"
     proxmox_nodes:
       - remonster-1
       - remonster-2
-      - remonster-3c
+      - remonster-3
       - remonster-4
       - remonster-5
+    target_nodes: "all"   # Change to single node name, or keep "all" for all nodes
 
   tasks:
-    - name: Get VM IDs from each node
-      uri:
-        url: "https://{{ hostvars[groups['proxmox'][0]].ansible_host }}:8006/api2/json/nodes/{{ item }}/qemu"
-        method: GET
-        headers:
-          Authorization: "PVEAPIToken={{ proxmox_user }}!{{ proxmox_token_id }}={{ proxmox_token_secret }}"
-        validate_certs: no
-      loop: "{{ proxmox_nodes if target_node == 'all' else [target_node] }}"
-      register: vm_list
-
-    - name: Collect VM status for each VM ID
-      uri:
-        url: "https://{{ hostvars[groups['proxmox'][0]].ansible_host }}:8006/api2/json/nodes/{{ item.node }}/qemu/{{ item.vmid }}/status/current"
-        method: GET
-        headers:
-          Authorization: "PVEAPIToken={{ proxmox_user }}!{{ proxmox_token_id }}={{ proxmox_token_secret }}"
-        validate_certs: no
-      loop: "{{ vm_list.results | map(attribute='json.data') | sum(start=[]) | list }}"
-      loop_control:
-        label: "{{ item.node }}-{{ item.vmid }}"
-      register: vm_status
-
-    - name: Filter only running VMs
+    - name: Normalize node list
       set_fact:
-        running_vms: "{{ vm_status.results | map(attribute='json.data') | selectattr('status','equalto','running') | list }}"
+        nodes_to_check: "{{ proxmox_nodes if target_nodes == 'all' else [target_nodes] }}"
 
-    - name: Print running VMs by node
+    - name: Gather running VMs via qm list
+      shell: "qm list | awk 'NR>1 && $3==\"running\" {print $1 \",\" $2 \",\" $3}'"
+      delegate_to: "{{ item }}"
+      loop: "{{ nodes_to_check }}"
+      register: running_vms
+      changed_when: false
+
+    - name: Combine all results
+      set_fact:
+        all_running_vms: >-
+          {%- set out = [] -%}
+          {%- for r in running_vms.results -%}
+            {%- for line in r.stdout_lines -%}
+              {%- set parts = line.split(',') -%}
+              {%- if parts|length == 3 -%}
+                {%- set _ = out.append({'node': r.item, 'vmid': parts[0], 'name': parts[1], 'status': parts[2]}) -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Print running VMs grouped by node
       debug:
+        msg: |
+          {% for node, vms in all_running_vms | groupby('node') %}
+          Node: {{ node }}
+          {% for vm in vms %}
+            VMID: {{ vm.vmid }} | Name: {{ vm.name }} | Status: {{ vm.status }}
+          {% endfor %}
+          {% endfor %}
