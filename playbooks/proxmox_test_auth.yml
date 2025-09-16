@@ -1,5 +1,5 @@
 ---
-- name: List running VMs from specific node or all nodes directly
+- name: Get running VMs from Proxmox nodes
   hosts: localhost
   gather_facts: false
   vars:
@@ -7,7 +7,7 @@
     proxmox_token_id: "ansible-token"
     proxmox_token_secret: "{{ ansible_password }}"
     validate_certs: false
-    target_node: "all"      # Change to "remonster-1" for a single node, or "all" for every node
+    target_node: "all"
     proxmox_nodes:
       - remonster-1
       - remonster-2
@@ -16,31 +16,31 @@
       - remonster-5
 
   tasks:
-    - name: Get VMs directly from each node using correct names
+    - name: Get VM IDs from each node
       uri:
         url: "https://{{ hostvars[groups['proxmox'][0]].ansible_host }}:8006/api2/json/nodes/{{ item }}/qemu"
         method: GET
         headers:
           Authorization: "PVEAPIToken={{ proxmox_user }}!{{ proxmox_token_id }}={{ proxmox_token_secret }}"
         validate_certs: no
-      register: node_vms
       loop: "{{ proxmox_nodes if target_node == 'all' else [target_node] }}"
-      failed_when: node_vms is failed
+      register: vm_list
 
-    - name: Flatten all node VM data
-      set_fact:
-        all_vms: "{{ node_vms.results | map(attribute='json.data') | sum(start=[]) | list }}"
+    - name: Collect VM status for each VM ID
+      uri:
+        url: "https://{{ hostvars[groups['proxmox'][0]].ansible_host }}:8006/api2/json/nodes/{{ item.node }}/qemu/{{ item.vmid }}/status/current"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_user }}!{{ proxmox_token_id }}={{ proxmox_token_secret }}"
+        validate_certs: no
+      loop: "{{ vm_list.results | map(attribute='json.data') | sum(start=[]) | list }}"
+      loop_control:
+        label: "{{ item.node }}-{{ item.vmid }}"
+      register: vm_status
 
     - name: Filter only running VMs
       set_fact:
-        running_vms: "{{ all_vms | selectattr('status','equalto','running') | list }}"
+        running_vms: "{{ vm_status.results | map(attribute='json.data') | selectattr('status','equalto','running') | list }}"
 
-    - name: Print running VMs grouped by node
+    - name: Print running VMs by node
       debug:
-        msg: |
-          {% for node, vms in running_vms | groupby('node') %}
-          Node: {{ node }}
-          {% for vm in vms %}
-            VMID: {{ vm.vmid }} | Name: {{ vm.name }} | Status: {{ vm.status }}
-          {% endfor %}
-          {% endfor %}
