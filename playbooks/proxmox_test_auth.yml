@@ -1,18 +1,17 @@
 ---
-- name: List all VMs from the entire Proxmox cluster
+- name: List all VMs from entire Proxmox cluster and inventory
   hosts: localhost
   gather_facts: false
   vars:
-    proxmox_host: "10.200.7.10"        # Only one node needed for cluster query
     proxmox_user: "ansible@pve"
     proxmox_token_id: "ansible-token"
     proxmox_token_secret: "{{ ansible_password }}"
     validate_certs: false
 
   tasks:
-    - name: Get all cluster resources directly
+    - name: Get VMs from cluster API
       uri:
-        url: "https://{{ proxmox_host }}:8006/api2/json/cluster/resources"
+        url: "https://{{ hostvars[groups['proxmox'][0]].ansible_host }}:8006/api2/json/cluster/resources"
         method: GET
         headers:
           Authorization: "PVEAPIToken={{ proxmox_user }}!{{ proxmox_token_id }}={{ proxmox_token_secret }}"
@@ -20,22 +19,30 @@
       register: cluster_resources
       failed_when: cluster_resources.status != 200
 
-    # Debug raw API output in case we need to see structure
-    - name: Show raw Proxmox API data (for verification)
-      debug:
-        var: cluster_resources.json
-
-    - name: Extract only QEMU VM list from API response
+    - name: Extract QEMU VMs from cluster API
       set_fact:
-        vms: "{{ cluster_resources.json.data | selectattr('type','equalto','qemu') | list | default([]) }}"
+        cluster_vms: "{{ cluster_resources.json.data | selectattr('type','equalto','qemu') | list | default([]) }}"
 
-    - name: Print VMs grouped by node
+    - name: Get VMs from all inventory nodes (fallback)
+      community.proxmox.proxmox_vm_info:
+        api_host: "{{ hostvars[item].ansible_host | default(item) }}"
+        api_user: "{{ proxmox_user }}"
+        api_token_id: "{{ proxmox_token_id }}"
+        api_token_secret: "{{ proxmox_token_secret }}"
+        validate_certs: "{{ validate_certs }}"
+      loop: "{{ groups['proxmox'] }}"
+      register: inventory_vms
+
+    - name: Combine cluster and inventory VMs
+      set_fact:
+        all_vms: "{{ cluster_vms + (inventory_vms.results | map(attribute='proxmox_vms') | sum(start=[])) }}"
+
+    - name: Print all VMs grouped by node
       debug:
         msg: |
-          {% for node, node_vms in vms | groupby('node') %}
+          {% for node, node_vms in all_vms | groupby('node') %}
           Node: {{ node }}
           {% for vm in node_vms %}
             VMID: {{ vm.vmid }} | Name: {{ vm.name }} | Status: {{ vm.status }}
           {% endfor %}
           {% endfor %}
-
