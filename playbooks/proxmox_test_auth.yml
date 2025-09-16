@@ -1,5 +1,5 @@
 ---
-- name: Debug VM data from Proxmox cluster and inventory
+- name: List running VMs from specific node or all nodes directly
   hosts: localhost
   gather_facts: false
   vars:
@@ -7,48 +7,34 @@
     proxmox_token_id: "ansible-token"
     proxmox_token_secret: "{{ ansible_password }}"
     validate_certs: false
-    target_node: "all"      # Change to node name like "remonster-1" or leave as "all"
+    target_node: "all"      # Change to "remonster-1" for a single node, or "all" for every node
 
   tasks:
-    - name: Get VMs from cluster API
+    - name: Get VMs directly from each node
       uri:
-        url: "https://{{ hostvars[groups['proxmox'][0]].ansible_host }}:8006/api2/json/cluster/resources"
+        url: "https://{{ hostvars[item].ansible_host }}:8006/api2/json/nodes/{{ item }}/qemu"
         method: GET
         headers:
           Authorization: "PVEAPIToken={{ proxmox_user }}!{{ proxmox_token_id }}={{ proxmox_token_secret }}"
         validate_certs: no
-      register: cluster_resources
-      failed_when: cluster_resources.status != 200
+      register: node_vms
+      loop: "{{ groups['proxmox'] if target_node == 'all' else [target_node] }}"
+      failed_when: node_vms is failed
 
-    - name: Extract QEMU VMs from cluster API
+    - name: Flatten all node VM data
       set_fact:
-        cluster_vms: "{{ cluster_resources.json.data | selectattr('type','equalto','qemu') | list | default([]) }}"
+        all_vms: "{{ node_vms.results | map(attribute='json.data') | sum(start=[]) | list }}"
 
-    - name: Get VMs from all inventory nodes (fallback)
-      community.proxmox.proxmox_vm_info:
-        api_host: "{{ hostvars[item].ansible_host | default(item) }}"
-        api_user: "{{ proxmox_user }}"
-        api_token_id: "{{ proxmox_token_id }}"
-        api_token_secret: "{{ proxmox_token_secret }}"
-        validate_certs: "{{ validate_certs }}"
-      loop: "{{ groups['proxmox'] }}"
-      register: inventory_vms
-
-    - name: Combine cluster and inventory VMs safely
+    - name: Filter only running VMs
       set_fact:
-        all_vms: >-
-          {{
-            (cluster_vms | selectattr('node','defined') | list) +
-            (inventory_vms.results | map(attribute='proxmox_vms') | select('defined') | list | sum(start=[]))
-              | selectattr('node','defined') | list
-          }}
+        running_vms: "{{ all_vms | selectattr('status','equalto','running') | list }}"
 
-    # --- Debug section to show raw VM data before filtering ---
-    - name: Debug raw combined VM data
+    - name: Print running VMs grouped by node
       debug:
-        var: all_vms
-
-    # We'll add filtering once we see the correct field names
-    - name: Placeholder for filtering logic
-      debug:
-        msg: "We will add running VM filtering after verifying structure"
+        msg: |
+          {% for node, vms in running_vms | groupby('node') %}
+          Node: {{ node }}
+          {% for vm in vms %}
+            VMID: {{ vm.vmid }} | Name: {{ vm.name }} | Status: {{ vm.status }}
+          {% endfor %}
+          {% endfor %}
