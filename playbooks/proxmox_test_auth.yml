@@ -1,0 +1,23 @@
+---
+- name: Verify Proxmox API authentication
+  hosts: localhost
+  gather_facts: false
+  vars:
+    proxmox_host: "10.200.7.10"
+    proxmox_user: "{{ ansible_user }}"
+    proxmox_password: "{{ ansible_password }}"
+    validate_certs: false
+
+  tasks:
+    - name: Attempt simple Proxmox API call
+      community.proxmox.proxmox_vm_info:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: "{{ validate_certs }}"
+      register: result
+      failed_when: false
+
+    - name: Show API response
+      debug:
+        var: result
