@@ -34,17 +34,17 @@
       loop: "{{ groups['proxmox'] }}"
       register: inventory_vms
 
-    - name: Combine cluster and inventory VMs
+    - name: Flatten all VM data into one list safely
       set_fact:
-        all_vms: "{{ cluster_vms + (inventory_vms.results | map(attribute='proxmox_vms') | sum(start=[])) }}"
+        all_vms: "{{ cluster_vms + (inventory_vms.results | map(attribute='proxmox_vms') | select('defined') | list | sum(start=[])) }}"
 
-    - name: Filter for running VMs on target node or all nodes
+    - name: Filter only running VMs on target node or all nodes
       set_fact:
         filtered_vms: >-
           {% if target_node == 'all' %}
-          {{ all_vms | selectattr('status','equalto','running') | list }}
+          {{ all_vms | selectattr('status','defined') | selectattr('status','equalto','running') | list }}
           {% else %}
-          {{ all_vms | selectattr('status','equalto','running') | selectattr('node','equalto',target_node) | list }}
+          {{ all_vms | selectattr('status','defined') | selectattr('status','equalto','running') | selectattr('node','equalto',target_node) | list }}
           {% endif %}
 
     - name: Print running VMs grouped by node
