@@ -8,17 +8,23 @@
     proxmox_token_secret: "{{ ansible_password }}"
     validate_certs: false
     target_node: "all"      # Change to "remonster-1" for a single node, or "all" for every node
+    proxmox_nodes:
+      - remonster-1
+      - remonster-2
+      - remonster-3c
+      - remonster-4
+      - remonster-5
 
   tasks:
-    - name: Get VMs directly from each node
+    - name: Get VMs directly from each node using correct names
       uri:
-        url: "https://{{ hostvars[item].ansible_host }}:8006/api2/json/nodes/{{ item }}/qemu"
+        url: "https://{{ hostvars[groups['proxmox'][0]].ansible_host }}:8006/api2/json/nodes/{{ item }}/qemu"
         method: GET
         headers:
           Authorization: "PVEAPIToken={{ proxmox_user }}!{{ proxmox_token_id }}={{ proxmox_token_secret }}"
         validate_certs: no
       register: node_vms
-      loop: "{{ groups['proxmox'] if target_node == 'all' else [target_node] }}"
+      loop: "{{ proxmox_nodes if target_node == 'all' else [target_node] }}"
       failed_when: node_vms is failed
 
     - name: Flatten all node VM data
