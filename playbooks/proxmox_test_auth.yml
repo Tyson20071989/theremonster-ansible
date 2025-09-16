@@ -3,7 +3,7 @@
   hosts: localhost
   gather_facts: false
   vars:
-    proxmox_host: "10.200.7.10"
+    proxmox_host: "10.200.7.10"        # Only one node needed for cluster query
     proxmox_user: "ansible@pve"
     proxmox_token_id: "ansible-token"
     proxmox_token_secret: "{{ ansible_password }}"
@@ -20,9 +20,14 @@
       register: cluster_resources
       failed_when: cluster_resources.status != 200
 
-    - name: Extract QEMU VM list
+    # Debug raw API output in case we need to see structure
+    - name: Show raw Proxmox API data (for verification)
+      debug:
+        var: cluster_resources.json
+
+    - name: Extract only QEMU VM list from API response
       set_fact:
-        vms: "{{ cluster_resources.json.data | selectattr('type','equalto','qemu') | list }}"
+        vms: "{{ cluster_resources.json.data | selectattr('type','equalto','qemu') | list | default([]) }}"
 
     - name: Print VMs grouped by node
       debug:
@@ -33,3 +38,4 @@
             VMID: {{ vm.vmid }} | Name: {{ vm.name }} | Status: {{ vm.status }}
           {% endfor %}
           {% endfor %}
+
