@@ -5,7 +5,7 @@
   vars:
     proxmox_host: "10.200.7.10"
     proxmox_user: "ansible@pve"
-    proxmox_token_id: "ansible@pve!ansible-token"
+    proxmox_token_id: "ansible-token"
     proxmox_token_secret: "{{ ansible_password }}"
     validate_certs: false
 
