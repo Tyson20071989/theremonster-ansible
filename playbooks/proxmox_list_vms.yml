@@ -1,14 +1,21 @@
-version: 3
-images:
-  base_image:
-    name: quay.io/ansible/awx-ee:latest
-dependencies:
-  galaxy: requirements.yml
-  python: requirements.txt
-  ansible_core:
-    package_pip: ansible-core
-  ansible_runner:
-    package_pip: ansible-runner
-additional_build_steps:
-  prepend_base:
-    - "RUN pip3 install --upgrade pip setuptools wheel"
+---
+- name: List all VMs on Proxmox nodes
+  hosts: proxmox
+  gather_facts: false
+  become: false
+
+  tasks:
+    - name: Get list of VMs on each node
+      command: qm list
+      register: vm_list_raw
+      changed_when: false
+
+    - name: Save VM list output per node
+      set_fact:
+        vm_list: "{{ vm_list_raw.stdout_lines }}"
+
+    - name: Print VMs for each node
+      debug:
+        msg: |
+          Node: {{ inventory_hostname }}
+          {{ vm_list | join('\n') }}
