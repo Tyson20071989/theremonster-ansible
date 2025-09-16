@@ -1,23 +1,25 @@
 ---
-- name: Verify Proxmox API authentication
+- name: Verify Proxmox API authentication across all nodes
   hosts: localhost
   gather_facts: false
   vars:
-    proxmox_host: "10.200.7.10"
+    proxmox_host: "10.200.7.10"        # Proxmox API endpoint (any node in cluster)
     proxmox_user: "{{ ansible_user }}"
     proxmox_password: "{{ ansible_password }}"
     validate_certs: false
 
   tasks:
-    - name: Attempt simple Proxmox API call
+    - name: Get all VMs from entire Proxmox cluster
       community.proxmox.proxmox_vm_info:
         api_host: "{{ proxmox_host }}"
         api_user: "{{ proxmox_user }}"
         api_password: "{{ proxmox_password }}"
         validate_certs: "{{ validate_certs }}"
-      register: result
-      failed_when: false
+      register: vm_info
 
-    - name: Show API response
+    - name: Print summary of all VMs by node
       debug:
-        var: result
+        msg: |
+          {% for vm in vm_info.vms %}
+          Node: {{ vm.node }} | VMID: {{ vm.vmid }} | Name: {{ vm.name }} | Status: {{ vm.status }}
+          {% endfor %}
