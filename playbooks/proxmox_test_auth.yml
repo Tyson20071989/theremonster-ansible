@@ -3,9 +3,9 @@
   hosts: localhost
   gather_facts: false
   vars:
-    proxmox_host: "10.200.7.10"        # Proxmox API endpoint (any node in cluster)
-    proxmox_user: "{{ ansible_user }}"
-    proxmox_password: "{{ ansible_password }}"
+    proxmox_host: "10.200.7.10"
+    proxmox_user: "ansible@pve!ansible-token"
+    proxmox_token: "{{ ansible_password }}"  # Store secret in AAP credentials
     validate_certs: false
 
   tasks:
@@ -13,13 +13,11 @@
       community.proxmox.proxmox_vm_info:
         api_host: "{{ proxmox_host }}"
         api_user: "{{ proxmox_user }}"
-        api_password: "{{ proxmox_password }}"
+        api_token_id: "{{ proxmox_user }}"
+        api_token_secret: "{{ proxmox_token }}"
         validate_certs: "{{ validate_certs }}"
       register: vm_info
 
     - name: Print summary of all VMs by node
       debug:
-        msg: |
-          {% for vm in vm_info.vms %}
-          Node: {{ vm.node }} | VMID: {{ vm.vmid }} | Name: {{ vm.name }} | Status: {{ vm.status }}
-          {% endfor %}
+        var: vm_info
