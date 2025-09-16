@@ -1,27 +1,35 @@
 ---
-- name: Verify Proxmox API authentication across all nodes
+- name: List all VMs from all Proxmox nodes grouped by node
   hosts: localhost
   gather_facts: false
   vars:
-    proxmox_host: "10.200.7.10"
     proxmox_user: "ansible@pve"
     proxmox_token_id: "ansible-token"
     proxmox_token_secret: "{{ ansible_password }}"
     validate_certs: false
 
   tasks:
-    - name: Get all VMs from entire Proxmox cluster
+    - name: Get VMs from each Proxmox node in inventory
       community.proxmox.proxmox_vm_info:
-        api_host: "{{ proxmox_host }}"
+        api_host: "{{ hostvars[item].ansible_host | default(item) }}"
         api_user: "{{ proxmox_user }}"
         api_token_id: "{{ proxmox_token_id }}"
         api_token_secret: "{{ proxmox_token_secret }}"
         validate_certs: "{{ validate_certs }}"
-      register: vm_info
+      loop: "{{ groups['proxmox'] }}"
+      register: vm_info_all
 
-    - name: Print summary of all VMs by node
+    - name: Combine all VM data
+      set_fact:
+        all_vms: "{{ all_vms | default([]) + item.proxmox_vms }}"
+      loop: "{{ vm_info_all.results }}"
+
+    - name: Print VMs grouped by node
       debug:
         msg: |
-          {% for vm in vm_info.proxmox_vms %}
-          Node: {{ vm.node }} | VMID: {{ vm.vmid }} | Name: {{ vm.name }} | Status: {{ vm.status }}
+          {% for node in all_vms | groupby('node') %}
+          Node: {{ node.0 }}
+          {% for vm in node.1 %}
+            VMID: {{ vm.vmid }} | Name: {{ vm.name }} | Status: {{ vm.status }}
+          {% endfor %}
           {% endfor %}
