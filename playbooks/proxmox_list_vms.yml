@@ -1,0 +1,22 @@
+---
+- name: List all Proxmox VMs from all nodes
+  hosts: localhost
+  gather_facts: false
+  vars:
+    proxmox_host: "10.200.7.10"       # Your Proxmox cluster API endpoint (any node works)
+    proxmox_user: "root@pam"          # Proxmox user with API access
+    proxmox_password: "{{ lookup('env', 'PROXMOX_PASSWORD') }}"  # We will use AAP credentials
+    validate_certs: false             # Set to true if you have valid SSL certs
+
+  tasks:
+    - name: Get all VMs from all nodes
+      community.proxmox.proxmox_vm_info:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: "{{ validate_certs }}"
+      register: vm_info
+
+    - name: Print all VMs
+      debug:
+        var: vm_info
