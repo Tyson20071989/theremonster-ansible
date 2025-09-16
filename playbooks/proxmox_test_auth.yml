@@ -4,20 +4,22 @@
   gather_facts: false
   vars:
     proxmox_host: "10.200.7.10"
-    proxmox_user: "ansible@pve!ansible-token"
-    proxmox_token: "{{ ansible_password }}"  # Store secret in AAP credentials
+    proxmox_token_id: "{{ ansible_user }}"
+    proxmox_token_secret: "{{ ansible_password }}"
     validate_certs: false
 
   tasks:
     - name: Get all VMs from entire Proxmox cluster
       community.proxmox.proxmox_vm_info:
         api_host: "{{ proxmox_host }}"
-        api_user: "{{ proxmox_user }}"
-        api_token_id: "{{ proxmox_user }}"
-        api_token_secret: "{{ proxmox_token }}"
+        api_token_id: "{{ proxmox_token_id }}"
+        api_token_secret: "{{ proxmox_token_secret }}"
         validate_certs: "{{ validate_certs }}"
       register: vm_info
 
     - name: Print summary of all VMs by node
       debug:
-        var: vm_info
+        msg: |
+          {% for vm in vm_info.vms %}
+          Node: {{ vm.node }} | VMID: {{ vm.vmid }} | Name: {{ vm.name }} | Status: {{ vm.status }}
+          {% endfor %}
