@@ -22,6 +22,6 @@
     - name: Print summary of all VMs by node
       debug:
         msg: |
-          {% for vm in vm_info.vms %}
+          {% for vm in vm_info.proxmox_vms %}
           Node: {{ vm.node }} | VMID: {{ vm.vmid }} | Name: {{ vm.name }} | Status: {{ vm.status }}
           {% endfor %}
