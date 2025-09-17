@@ -1,0 +1,42 @@
+---
+- name: Set up SSH keys for Proxmox nodes
+  hosts: proxmox
+  gather_facts: false
+  become: false
+
+  vars:
+    ssh_key_path: "~/.ssh/proxmox_ansible"
+    ssh_pub_key: "{{ lookup('file', ssh_key_path + '.pub') }}"
+
+  pre_tasks:
+    - name: Fail if public key does not exist
+      stat:
+        path: "{{ ssh_key_path }}.pub"
+      register: key_stat
+      delegate_to: localhost
+
+    - name: Abort if no SSH key found
+      fail:
+        msg: "SSH public key not found at {{ ssh_key_path }}.pub. Please generate it first!"
+      when: not key_stat.stat.exists
+      delegate_to: localhost
+
+  tasks:
+    - name: Ensure .ssh directory exists
+      file:
+        path: "/root/.ssh"
+        state: directory
+        mode: '0700'
+
+    - name: Copy public key to authorized_keys
+      lineinfile:
+        path: "/root/.ssh/authorized_keys"
+        line: "{{ ssh_pub_key }}"
+        create: yes
+        mode: '0600'
+        state: present
+
+    - name: Verify passwordless SSH works
+      command: "echo 'SSH key auth OK on {{ inventory_hostname }}'"
+      changed_when: false
+
