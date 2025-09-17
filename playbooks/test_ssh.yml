@@ -1,0 +1,9 @@
+# /opt/ansible/playbooks/test_ssh.yml
+---
+- name: Test SSH to Proxmox nodes
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Check SSH connectivity
+      delegate_to: remonster-4         # or any node in your inventory
+      command: hostname -f
